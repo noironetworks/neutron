@@ -53,8 +53,8 @@ def upgrade(active_plugins=None, options=None):
         sa.Column('profile_id', sa.String(length=64), nullable=False),
         sa.Column('hpselc_id', sa.String(length=64), nullable=False),
         sa.Column('module', sa.String(length=10), nullable=False),
-        sa.Column('from_port', sa.Integer(10), nullable=False),
-        sa.Column('to_port', sa.Integer(10), nullable=False),
+        sa.Column('from_port', sa.Integer(), nullable=False),
+        sa.Column('to_port', sa.Integer(), nullable=False),
         sa.PrimaryKeyConstraint('node_id'))
 
     op.create_table(
