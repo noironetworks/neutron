@@ -44,8 +44,8 @@ class PortProfile(model_base.BASEV2):
     profile_id = sa.Column(sa.String(64), nullable=False)
     hpselc_id = sa.Column(sa.String(64), nullable=False)
     module = sa.Column(sa.String(10), nullable=False)
-    from_port = sa.Column(sa.Integer(10), nullable=False)
-    to_port = sa.Column(sa.Integer(10), nullable=False)
+    from_port = sa.Column(sa.Integer(), nullable=False)
+    to_port = sa.Column(sa.Integer(), nullable=False)
 
 
 class TenantContract(model_base.BASEV2, models_v2.HasTenant):
