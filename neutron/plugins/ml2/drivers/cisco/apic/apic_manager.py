@@ -26,7 +26,6 @@ from neutron.plugins.ml2.drivers.cisco.apic import apic_model
 from neutron.plugins.ml2.drivers.cisco.apic import config
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
 
-AP_NAME = 'openstack'
 CONTEXT_ENFORCED = '1'
 CONTEXT_UNENFORCED = '2'
 CONTEXT_DEFAULT = 'default'
@@ -70,6 +69,7 @@ class APICManager(object):
         self.phys_domain = None
         self.vlan_ns = None
         self.node_profiles = {}
+        self.app_profile_name = apic_conf.apic_app_profile_name
         self.entity_profile = None
         self.function_profile = None
         self.clear_node_profiles = apic_conf.apic_clear_node_profiles
@@ -390,23 +390,23 @@ class APICManager(object):
         # Create a new EPG on the APIC
         epg_uid = '-'.join([str(net_name), str(uuid.uuid4())])
         try:
-            self.apic.fvAEPg.create(tenant_id, AP_NAME, epg_uid)
+            self.apic.fvAEPg.create(tenant_id, self.app_profile_name, epg_uid)
 
             # Add bd to EPG
             bd = self.apic.fvBD.get(tenant_id, network_id)
             bd_name = bd['name']
 
             # create fvRsBd
-            self.apic.fvRsBd.create(tenant_id, AP_NAME, epg_uid,
+            self.apic.fvRsBd.create(tenant_id, self.app_profile_name, epg_uid,
                                     tnFvBDName=bd_name)
 
             # Add EPG to physical domain
             phys_dn = self.phys_domain[DN_KEY]
-            self.apic.fvRsDomAtt.create(tenant_id, AP_NAME, epg_uid, phys_dn)
+            self.apic.fvRsDomAtt.create(tenant_id, self.app_profile_name, epg_uid, phys_dn)
         except (cexc.ApicResponseNotOk, KeyError):
             with excutils.save_and_reraise_exception():
                 # Delete the EPG
-                self.apic.fvAEPg.delete(tenant_id, AP_NAME, epg_uid)
+                self.apic.fvAEPg.delete(tenant_id, self.app_profile_name, epg_uid)
 
         # Stick it in the DB
         epg = self.db.write_epg_for_network(network_id, epg_uid)
@@ -421,7 +421,7 @@ class APICManager(object):
             return False
 
         # Delete this epg
-        self.apic.fvAEPg.delete(tenant_id, AP_NAME, epg.epg_id)
+        self.apic.fvAEPg.delete(tenant_id, self.app_profile_name, epg.epg_id)
         # Remove DB row
         self.db.delete_epg(epg)
 
@@ -448,17 +448,17 @@ class APICManager(object):
         """
         if provider:
             try:
-                self.apic.fvRsProv.create(tenant_id, AP_NAME,
+                self.apic.fvRsProv.create(tenant_id, self.app_profile_name,
                                           epg_id, contract_id)
                 self.db.set_provider_contract(epg_id)
                 self.make_tenant_contract_global(tenant_id)
             except (cexc.ApicResponseNotOk, KeyError):
                 with excutils.save_and_reraise_exception():
                     self.make_tenant_contract_local(tenant_id)
-                    self.apic.fvRsProv.delete(tenant_id, AP_NAME,
+                    self.apic.fvRsProv.delete(tenant_id, self.app_profile_name,
                                               epg_id, contract_id)
         else:
-            self.apic.fvRsCons.create(tenant_id, AP_NAME, epg_id, contract_id)
+            self.apic.fvRsCons.create(tenant_id, self.app_profile_name, epg_id, contract_id)
 
     def delete_contract_for_epg(self, tenant_id, epg_id,
                                 contract_id, provider=False):
@@ -468,19 +468,19 @@ class APICManager(object):
         consumer from the DB and set that as the new contract provider.
         """
         if provider:
-            self.apic.fvRsProv.delete(tenant_id, AP_NAME, epg_id, contract_id)
+            self.apic.fvRsProv.delete(tenant_id, self.app_profile_name, epg_id, contract_id)
             self.db.unset_provider_contract(epg_id)
             # Pick out another EPG to set as contract provider
             epg = self.db.get_an_epg(epg_id)
             self.update_contract_for_epg(tenant_id, epg.epg_id,
                                          contract_id, True)
         else:
-            self.apic.fvRsCons.delete(tenant_id, AP_NAME, epg_id, contract_id)
+            self.apic.fvRsCons.delete(tenant_id, self.app_profile_name, epg_id, contract_id)
 
     def update_contract_for_epg(self, tenant_id, epg_id,
                                 contract_id, provider=False):
         """Updates the contract for an End Point Group."""
-        self.apic.fvRsCons.delete(tenant_id, AP_NAME, epg_id, contract_id)
+        self.apic.fvRsCons.delete(tenant_id, self.app_profile_name, epg_id, contract_id)
         self.set_contract_for_epg(tenant_id, epg_id, contract_id, provider)
 
     def create_tenant_contract(self, tenant_id):
@@ -552,8 +552,8 @@ class APICManager(object):
         pdn = PORT_DN_PATH % (switch, port)
 
         # Check if exists
-        patt = self.apic.fvRsPathAtt.get(tenant_id, AP_NAME, eid, pdn)
+        patt = self.apic.fvRsPathAtt.get(tenant_id, self.app_profile_name, eid, pdn)
         if not patt:
-            self.apic.fvRsPathAtt.create(tenant_id, AP_NAME, eid, pdn,
+            self.apic.fvRsPathAtt.create(tenant_id, self.app_profile_name, eid, pdn,
                                          encap=encap, mode="regular",
                                          instrImedcy="immediate")
