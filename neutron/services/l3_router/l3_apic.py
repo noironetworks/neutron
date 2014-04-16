@@ -76,16 +76,14 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         return port
 
     def remove_router_interface(self, context, router_id, interface_info):
-        tenant_id = context.tenant_id
-        subnet_id = interface_info['subnet_id']
+        port = self.get_port(context, interface_info['port_id'])
+        tenant_id = port['tenant_id']
+        network_id = port['network_id']
+        subnet_id = port['fixed_ips'][0]['subnet_id']
 
         # Get network for this subnet
-        subnet = self.get_subnet(context, subnet_id)
-        network_id = subnet['network_id']
         network = self.get_network(context, network_id)
-
         contract = self.manager.create_tenant_contract(tenant_id)
-
         epg = self.manager.ensure_epg_created_for_network(tenant_id,
                                                           network_id,
                                                           network['name'])
