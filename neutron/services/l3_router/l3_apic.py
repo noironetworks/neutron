@@ -37,6 +37,15 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                 self.manager,
                 apic_manager.NAMING_STRATEGY_NAMES)
  
+    def _map_names(self, context, tenant_id, network_id, subnet_id):
+        context._plugin = self
+        context._plugin_context = context   # temporary circular reference
+        tenant_id = self.name_mapper.tenant(context, tenant_id)
+        network_id = self.name_mapper.network(context, network_id)
+        subnet_id = self.name_mapper.subnet(context, subnet_id)
+        context._plugin_context = None      # break circular reference
+        return  tenant_id, network_id, subnet_id
+
     @staticmethod
     def get_plugin_type():
         return constants.L3_ROUTER_NAT
@@ -52,13 +61,9 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         subnet = self.get_subnet(context, subnet_id)
         network_id = subnet['network_id']
 
-        # Convert to APIC IDs
-        context._plugin = self
-        context._plugin_context = context   # temporary circular reference
-        tenant_id = self.name_mapper.tenant(context, tenant_id)        
-        network_id = self.name_mapper.network(context, network_id)        
-        subnet_id = self.name_mapper.subnet(context, subnet_id)        
-        context._plugin_context = None      # break circular reference
+        # Map openstack IDs to APIC IDs
+        tenant_id, network_id, subnet_id = \
+                self._map_names(context, tenant_id, network_id, subnet_id)
 
         # Program APIC
         self.manager.add_router_interface(tenant_id, router_id,
@@ -77,13 +82,9 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         subnet = self.get_subnet(context, subnet_id)
         network_id = subnet['network_id']
 
-        # Convert to APIC IDs
-        context._plugin = self
-        context._plugin_context = context   # temporary circular reference
-        tenant_id = self.name_mapper.tenant(context, tenant_id)        
-        network_id = self.name_mapper.network(context, network_id)        
-        subnet_id = self.name_mapper.subnet(context, subnet_id)        
-        context._plugin_context = None      # break circular reference
+        # Map openstack IDs to APIC IDs
+        tenant_id, network_id, subnet_id = \
+                self._map_names(context, tenant_id, network_id, subnet_id)
 
         # Program APIC
         self.manager.remove_router_interface(tenant_id, router_id,
