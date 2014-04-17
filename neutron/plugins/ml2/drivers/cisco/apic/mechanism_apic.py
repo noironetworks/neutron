@@ -20,10 +20,11 @@ import netaddr
 from oslo.config import cfg
 
 from neutron.extensions import portbindings
+from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.common import constants
 from neutron.plugins.ml2 import driver_api as api
-from neutron.plugins.ml2.drivers.cisco.apic.apic_manager import APICManager
+from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
 
 
 LOG = log.getLogger(__name__)
@@ -32,7 +33,12 @@ LOG = log.getLogger(__name__)
 class APICMechanismDriver(api.MechanismDriver):
 
     def initialize(self):
-        self.apic_manager = APICManager()
+        self.apic_manager = apic_manager.APICManager()
+        self.name_mapper = apic_manager.APICNameMapper(
+                self.apic_manager,
+                apic_manager.NAMING_STRATEGY_NAMES)
+        self.keystone = None
+        self.tenants = {}
 
         # Create a VMM domain and VLAN namespace
         # Get vlan ns name
@@ -63,10 +69,11 @@ class APICMechanismDriver(api.MechanismDriver):
     def _perform_port_operations(self, context):
         # Get tenant details from port context
         tenant_id = context.current['tenant_id']
+        tenant_id = self.name_mapper.tenant(context, tenant_id)
 
         # Get network
-        network = context.network.current['id']
-        net_name = context.network.current['name']
+        network_id = context.network.current['id']
+        network_id = self.name_mapper.network(context, network_id)
 
         # Get port
         port = context.current
@@ -91,17 +98,16 @@ class APICMechanismDriver(api.MechanismDriver):
         dhcp_host = None
         for dport in ports:
             if (dport.get('device_owner') == 'network:dhcp' and
-                dport.get('network_id') == network):
+                dport.get('network_id') == network_id):
                 dhcp_host = dport.get(portbindings.HOST_ID)
 
         # Create a static path attachment for this host/epg/switchport combo
         self.apic_manager.ensure_tenant_created_on_apic(tenant_id)
-        self.apic_manager.ensure_path_created_for_port(tenant_id, network,
-                                                       host, seg, net_name)
+        self.apic_manager.ensure_path_created_for_port(tenant_id, network_id,
+                                                       host, seg)
         if dhcp_host is not None and host != dhcp_host:
-            self.apic_manager.ensure_path_created_for_port(tenant_id, network,
-                                                           dhcp_host, seg,
-                                                           net_name)
+            self.apic_manager.ensure_path_created_for_port(tenant_id, network_id,
+                                                           dhcp_host, seg)
 
     def create_port_postcommit(self, context):
         self._perform_port_operations(context)
@@ -110,21 +116,27 @@ class APICMechanismDriver(api.MechanismDriver):
         self._perform_port_operations(context)
 
     def create_network_postcommit(self, context):
-        net_id = context.current['id']
         tenant_id = context.current['tenant_id']
-        net_name = context.current['name']
+        network_id = context.current['id']
 
-        self.apic_manager.ensure_bd_created_on_apic(tenant_id, net_id)
+        # Convert to APIC IDs        
+        tenant_id = self.name_mapper.tenant(context, tenant_id)
+        network_id = self.name_mapper.network(context, network_id)
+
+        self.apic_manager.ensure_bd_created_on_apic(tenant_id, network_id)
         # Create EPG for this network
-        self.apic_manager.ensure_epg_created_for_network(tenant_id, net_id,
-                                                         net_name)
+        self.apic_manager.ensure_epg_created_for_network(tenant_id, network_id)
 
     def delete_network_postcommit(self, context):
-        net_id = context.current['id']
         tenant_id = context.current['tenant_id']
+        network_id = context.current['id']
 
-        self.apic_manager.delete_bd_on_apic(tenant_id, net_id)
-        self.apic_manager.delete_epg_for_network(tenant_id, net_id)
+        # Convert to APIC IDs        
+        tenant_id = self.name_mapper.tenant(context, tenant_id)
+        network_id = self.name_mapper.network(context, network_id)
+
+        self.apic_manager.delete_bd_on_apic(tenant_id, network_id)
+        self.apic_manager.delete_epg_for_network(tenant_id, network_id)
 
     def create_subnet_postcommit(self, context):
         tenant_id = context.current['tenant_id']
@@ -133,6 +145,10 @@ class APICMechanismDriver(api.MechanismDriver):
         cidr = netaddr.IPNetwork(context.current['cidr'])
         netmask = str(cidr.prefixlen)
         gateway_ip = gateway_ip + '/' + netmask
+
+        # Convert to APIC IDs        
+        tenant_id = self.name_mapper.tenant(context, tenant_id)
+        network_id = self.name_mapper.network(context, network_id)
 
         self.apic_manager.ensure_subnet_created_on_apic(tenant_id, network_id,
                                                         gateway_ip)

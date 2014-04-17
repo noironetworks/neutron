@@ -33,7 +33,10 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
     def __init__(self):
         qdbapi.register_models(base=model_base.BASEV2)
         self.manager = apic_manager.APICManager()
-
+        self.name_mapper = apic_manager.APICNameMapper(
+                self.manager,
+                apic_manager.NAMING_STRATEGY_NAMES)
+ 
     @staticmethod
     def get_plugin_type():
         return constants.L3_ROUTER_NAT
@@ -46,29 +49,21 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
     def add_router_interface(self, context, router_id, interface_info):
         tenant_id = context.tenant_id
         subnet_id = interface_info['subnet_id']
-
-        # Get network for this subnet
         subnet = self.get_subnet(context, subnet_id)
         network_id = subnet['network_id']
-        network = self.get_network(context, network_id)
-        net_name = network['name']
 
-        # Setup tenant filters and contracts
-        contract = self.manager.create_tenant_contract(tenant_id)
+        # Convert to APIC IDs
+        context._plugin = self
+        context._plugin_context = context   # temporary circular reference
+        tenant_id = self.name_mapper.tenant(context, tenant_id)        
+        network_id = self.name_mapper.network(context, network_id)        
+        subnet_id = self.name_mapper.subnet(context, subnet_id)        
+        context._plugin_context = None      # break circular reference
 
-        # Check for a provider EPG
-        epg = self.manager.ensure_epg_created_for_network(tenant_id,
-                                                          network_id,
-                                                          net_name)
-        if self.manager.db.get_provider_contract():
-            # Set this network's EPG as a consumer
-            self.manager.set_contract_for_epg(tenant_id, epg.epg_id,
-                                              contract.contract_id)
-        else:
-            # Set this network's EPG as a provider
-            self.manager.set_contract_for_epg(tenant_id, epg.epg_id,
-                                              contract.contract_id,
-                                              True)
+        # Program APIC
+        self.manager.add_router_interface(tenant_id, router_id,
+                                          network_id, subnet_id)
+
         # Create DB port
         port = super(ApicL3ServicePlugin, self).add_router_interface(
             context, router_id, interface_info)
@@ -78,19 +73,22 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
     def remove_router_interface(self, context, router_id, interface_info):
         port = self.get_port(context, interface_info['port_id'])
         tenant_id = port['tenant_id']
-        network_id = port['network_id']
         subnet_id = port['fixed_ips'][0]['subnet_id']
+        subnet = self.get_subnet(context, subnet_id)
+        network_id = subnet['network_id']
 
-        # Get network for this subnet
-        network = self.get_network(context, network_id)
-        contract = self.manager.create_tenant_contract(tenant_id)
-        epg = self.manager.ensure_epg_created_for_network(tenant_id,
-                                                          network_id,
-                                                          network['name'])
-        # Delete contract for this epg
-        self.manager.delete_contract_for_epg(tenant_id, epg.epg_id,
-                                             contract.contract_id,
-                                             epg.provider)
+        # Convert to APIC IDs
+        context._plugin = self
+        context._plugin_context = context   # temporary circular reference
+        tenant_id = self.name_mapper.tenant(context, tenant_id)        
+        network_id = self.name_mapper.network(context, network_id)        
+        subnet_id = self.name_mapper.subnet(context, subnet_id)        
+        context._plugin_context = None      # break circular reference
 
+        # Program APIC
+        self.manager.remove_router_interface(tenant_id, router_id,
+                                             network_id, subnet_id)
+
+        # Delete DB port
         super(ApicL3ServicePlugin, self).remove_router_interface(
             context, router_id, interface_info)
