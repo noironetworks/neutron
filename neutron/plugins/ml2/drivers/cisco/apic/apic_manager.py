@@ -285,8 +285,10 @@ class APICManager(object):
                 self.apic.vmmDomP.create(provider, vmm_name)
                 if vlan_ns:
                     vlan_ns_dn = vlan_ns[DN_KEY]
-                    self.apic.infraRsVlanNs.create(provider, vmm_name,
-                                                   tDn=vlan_ns_dn)
+                    # TODO: If we change back to vmm domain, need to revert
+                    #self.apic.infraRsVlanNs.create(provider, vmm_name,
+                    #                               tDn=vlan_ns_dn)
+                    self.apic.infraRsVlanNs.create(vmm_name, tDn=vlan_ns_dn)
                 self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
             except (cexc.ApicResponseNotOk, KeyError):
                 with excutils.save_and_reraise_exception():

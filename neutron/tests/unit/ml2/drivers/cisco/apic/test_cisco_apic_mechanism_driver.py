@@ -53,6 +53,11 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         self.driver = md.APICMechanismDriver()
         self.driver.vif_type = 'test-vif_type'
         self.driver.cap_port_filter = 'test-cap_port_filter'
+        self.driver.name_mapper = mock.Mock()
+        self.driver.name_mapper.tenant.return_value = mocked.APIC_TENANT
+        self.driver.name_mapper.network.return_value = mocked.APIC_NETWORK
+        self.driver.name_mapper.subnet.return_value = mocked.APIC_SUBNET
+        self.driver.name_mapper.port.return_value = mocked.APIC_PORT
 
         self.addCleanup(mock.patch.stopall)
 
@@ -62,7 +67,7 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         ns = mocked.APIC_VLAN_NAME
         mode = mocked.APIC_VLAN_MODE
         self.mock_response_for_get('fvnsVlanInstP', name=ns, mode=mode)
-        self.mock_response_for_get('vmmDomP', name=mocked.APIC_DOMAIN)
+        self.mock_response_for_get('physDomP', name=mocked.APIC_DOMAIN)
         self.mock_response_for_get('infraAttEntityP',
                                    name=mocked.APIC_ATT_ENT_PROF)
         self.mock_response_for_get('infraAccPortGrp',
@@ -80,31 +85,33 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         port_ctx = self._get_port_context(mocked.APIC_TENANT,
                                           mocked.APIC_NETWORK,
                                           'vm1', net_ctx, HOST_ID1)
-        mgr = self.driver.apic_manager = mock.Mock()
+        name_mapper = mock.Mock()
+        mgr = self.driver.apic_manager = mock.Mock(name_mapper=name_mapper)
         self.driver.update_port_postcommit(port_ctx)
         mgr.ensure_tenant_created_on_apic.assert_called_once_with(
             mocked.APIC_TENANT)
         mgr.ensure_path_created_for_port.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK, HOST_ID1,
-            ENCAP, mocked.APIC_NETWORK + '-name')
+            ENCAP)
 
     def test_create_network_postcommit(self):
         ctx = self._get_network_context(mocked.APIC_TENANT,
                                         mocked.APIC_NETWORK,
                                         TEST_SEGMENT1)
-        mgr = self.driver.apic_manager = mock.Mock()
+        name_mapper = mock.Mock()
+        mgr = self.driver.apic_manager = mock.Mock(name_mapper=name_mapper)
         self.driver.create_network_postcommit(ctx)
         mgr.ensure_bd_created_on_apic.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK)
         mgr.ensure_epg_created_for_network.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK,
-            mocked.APIC_NETWORK + '-name')
+            mocked.APIC_TENANT, mocked.APIC_NETWORK)
 
     def test_delete_network_postcommit(self):
         ctx = self._get_network_context(mocked.APIC_TENANT,
                                         mocked.APIC_NETWORK,
                                         TEST_SEGMENT1)
-        mgr = self.driver.apic_manager = mock.Mock()
+        name_mapper = mock.Mock()
+        mgr = self.driver.apic_manager = mock.Mock(name_mapper=name_mapper)
         self.driver.delete_network_postcommit(ctx)
         mgr.delete_bd_on_apic.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK)
@@ -118,7 +125,8 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         subnet_ctx = self._get_subnet_context(SUBNET_GATEWAY,
                                               SUBNET_CIDR,
                                               net_ctx)
-        mgr = self.driver.apic_manager = mock.Mock()
+        name_mapper = mock.Mock()
+        mgr = self.driver.apic_manager = mock.Mock(name_mapper=name_mapper)
         self.driver.create_subnet_postcommit(subnet_ctx)
         mgr.ensure_subnet_created_on_apic.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK,
@@ -196,6 +204,9 @@ class FakePortContext(object):
     def __init__(self, port, network):
         self._port = port
         self._network = network
+        self._plugin = mock.Mock()
+        self._plugin_context = mock.Mock()
+        self._plugin.get_ports.return_value = []
         if network.network_segments:
             self._bound_segment = network.network_segments[0]
         else:

@@ -140,6 +140,14 @@ class TestCiscoApicManager(base.BaseTestCase,
         old_dom = self.mgr.vmm_domain['name']
         self.assertEqual(old_dom, dom)
 
+    def _mock_phys_dom_responses(self, dom, seg_type=None):
+        dn = self.mgr.apic.physDomP.mo.dn(dom)
+        self.mock_response_for_get('physDomP')
+        self.mock_responses_for_create('physDomP')
+        if seg_type:
+            self.mock_responses_for_create(seg_type)
+        self.mock_response_for_get('physDomP', name=dom, dn=dn)
+
     def _mock_new_dom_responses(self, dom, seg_type=None):
         vmm = mocked.APIC_VMMP
         dn = self.mgr.apic.vmmDomP.mo.dn(vmm, dom)
@@ -302,8 +310,12 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assert_responses_drained()
 
     def _mock_vmm_dom_prereq(self, dom):
-        self._mock_new_dom_responses(dom)
+        self._mock_vmm_dom_responses(dom)
         self.mgr.ensure_vmm_domain_created_on_apic(dom)
+
+    def _mock_phys_dom_prereq(self, dom):
+        self._mock_phys_dom_responses(dom)
+        self.mgr.ensure_phys_domain_created_on_apic(dom)
 
     def test_ensure_entity_profile_created_old(self):
         ep = mocked.APIC_ATT_ENT_PROF
@@ -321,14 +333,14 @@ class TestCiscoApicManager(base.BaseTestCase,
             self.mock_response_for_get('infraAttEntityP')
 
     def test_ensure_entity_profile_created_new(self):
-        self._mock_vmm_dom_prereq(mocked.APIC_DOMAIN)
+        self._mock_phys_dom_prereq(mocked.APIC_DOMAIN)
         ep = mocked.APIC_ATT_ENT_PROF
         self._mock_new_entity_profile()
         self.mgr.ensure_entity_profile_created_on_apic(ep)
         self.assert_responses_drained()
 
     def test_ensure_entity_profile_created_new_exc(self):
-        self._mock_vmm_dom_prereq(mocked.APIC_DOMAIN)
+        self._mock_phys_dom_prereq(mocked.APIC_DOMAIN)
         ep = mocked.APIC_ATT_ENT_PROF
         self._mock_new_entity_profile(exc=wexc.HTTPBadRequest)
         self.mock_response_for_post('infraAttEntityP')
@@ -337,7 +349,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assert_responses_drained()
 
     def _mock_entity_profile_preqreq(self):
-        self._mock_vmm_dom_prereq(mocked.APIC_DOMAIN)
+        self._mock_phys_dom_prereq(mocked.APIC_DOMAIN)
         ep = mocked.APIC_ATT_ENT_PROF
         self._mock_new_entity_profile()
         self.mgr.ensure_entity_profile_created_on_apic(ep)
@@ -495,22 +507,20 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def test_ensure_epg_created_for_network_old(self):
         self.mock_db_query_filterby_first_return('faked')
-        epg = self.mgr.ensure_epg_created_for_network('X', 'Y', 'Z')
+        epg = self.mgr.ensure_epg_created_for_network('X', 'Y')
         self.assertEqual(epg, 'faked')
 
     def test_ensure_epg_created_for_network_new(self):
         tenant = mocked.APIC_TENANT
         network = mocked.APIC_NETWORK
-        netname = mocked.APIC_NETNAME
         dom = mocked.APIC_DOMAIN
+        self._mock_phys_dom_prereq(dom)
         self.mock_db_query_filterby_first_return(None)
         self.mock_responses_for_create('fvAEPg')
         self.mock_response_for_get('fvBD', name=network)
         self.mock_responses_for_create('fvRsBd')
-        self.mock_response_for_get('vmmDomP', name=dom, dn='dn')
         self.mock_responses_for_create('fvRsDomAtt')
-        new_epg = self.mgr.ensure_epg_created_for_network(tenant,
-                                                          network, netname)
+        new_epg = self.mgr.ensure_epg_created_for_network(tenant, network)
         self.assert_responses_drained()
         self.assertEqual(new_epg.network_id, network)
         self.assertTrue(self.mocked_session.add.called)
@@ -519,13 +529,12 @@ class TestCiscoApicManager(base.BaseTestCase,
     def test_ensure_epg_created_for_network_exc(self):
         tenant = mocked.APIC_TENANT
         network = mocked.APIC_NETWORK
-        netname = mocked.APIC_NETNAME
         self.mock_db_query_filterby_first_return(None)
         self.mock_error_post_response(wexc.HTTPBadRequest)
         self.mock_response_for_post('fvAEPg')
         self.assertRaises(cexc.ApicResponseNotOk,
                           self.mgr.ensure_epg_created_for_network,
-                          tenant, network, netname)
+                          tenant, network)
         self.assert_responses_drained()
 
     def test_delete_epg_for_network_no_epg(self):
@@ -548,7 +557,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         apic_manager.APICManager.ensure_epg_created_for_network = eepg
         self.mock_response_for_get('fvRsPathAtt', tDn='foo')
         self.mgr.ensure_path_created_for_port('tenant', 'network', 'rhel01',
-                                              'static', 'netname')
+                                              'static')
         self.assert_responses_drained()
 
     def test_ensure_path_created_for_port_no_path_att(self):
@@ -559,7 +568,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.mock_response_for_get('fvRsPathAtt')
         self.mock_responses_for_create('fvRsPathAtt')
         self.mgr.ensure_path_created_for_port('tenant', 'network', 'ubuntu2',
-                                              'static', 'netname')
+                                              'static')
         self.assert_responses_drained()
 
     def test_ensure_path_created_for_port_unknown_host(self):
@@ -570,7 +579,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.mock_response_for_get('fvRsPathAtt', tDn='foo')
         self.assertRaises(cexc.ApicHostNotConfigured,
                           self.mgr.ensure_path_created_for_port,
-                          'tenant', 'network', 'cirros3', 'static', 'netname')
+                          'tenant', 'network', 'cirros3', 'static')
 
     def test_create_tenant_filter(self):
         tenant = mocked.APIC_TENANT
