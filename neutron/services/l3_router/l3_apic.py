@@ -15,6 +15,8 @@
 #
 # @author: Arvind Somya (asomya@cisco.com), Cisco Systems Inc.
 
+from oslo.config import cfg
+
 from neutron.db import api as qdbapi
 from neutron.db import db_base_plugin_v2
 from neutron.db import extraroute_db
@@ -35,7 +37,7 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         self.manager = apic_manager.APICManager()
         self.name_mapper = apic_manager.APICNameMapper(
                 self.manager,
-                apic_manager.NAMING_STRATEGY_NAMES)
+                cfg.CONF.ml2_cisco_apic.apic_name_mapping)
  
     def _map_names(self, context, tenant_id, network_id, subnet_id):
         context._plugin = self
