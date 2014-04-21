@@ -27,6 +27,8 @@ apic_opts = [
                help=_("Password for the APIC controller"), secret=True),
     cfg.StrOpt('apic_port',
                help=_("Communication port for the APIC controller")),
+    cfg.StrOpt('apic_name_mapping', default='use_name',
+               help=_("Name mapping strategy to use: use_uuid | use_name")),
     cfg.StrOpt('apic_vmm_provider', default='VMware',
                help=_("Name for the VMM domain provider")),
     cfg.StrOpt('apic_vmm_domain', default='openstack',

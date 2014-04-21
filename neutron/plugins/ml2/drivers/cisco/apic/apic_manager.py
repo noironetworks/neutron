@@ -40,8 +40,8 @@ PORT_DN_PATH = 'topology/pod-1/paths-%s/pathep-[eth%s]'
 SCOPE_GLOBAL = 'global'
 SCOPE_TENANT = 'tenant'
 TENANT_COMMON = 'common'
-NAMING_STRATEGY_UUID = 1
-NAMING_STRATEGY_NAMES = 2
+NAMING_STRATEGY_UUID = 'use_uuid'
+NAMING_STRATEGY_NAMES = 'use_name'
 
 
 def group_by_ranges(i):

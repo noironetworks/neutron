@@ -34,11 +34,10 @@ class APICMechanismDriver(api.MechanismDriver):
 
     def initialize(self):
         self.apic_manager = apic_manager.APICManager()
+
         self.name_mapper = apic_manager.APICNameMapper(
                 self.apic_manager,
-                apic_manager.NAMING_STRATEGY_NAMES)
-        self.keystone = None
-        self.tenants = {}
+                cfg.CONF.ml2_cisco_apic.apic_name_mapping)
 
         # Create a VMM domain and VLAN namespace
         # Get vlan ns name
