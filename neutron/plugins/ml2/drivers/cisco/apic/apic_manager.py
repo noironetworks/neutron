@@ -286,7 +286,7 @@ class APICManager(object):
                 if vlan_ns:
                     vlan_ns_dn = vlan_ns[DN_KEY]
                     # TODO: If we change back to vmm domain, need to revert
-                    #self.apic.infraRsVlanNs.create(provider, vmm_name,
+                    # self.apic.infraRsVlanNs.create(provider, vmm_name,
                     #                               tDn=vlan_ns_dn)
                     self.apic.infraRsVlanNs.create(vmm_name, tDn=vlan_ns_dn)
                 self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
@@ -412,11 +412,13 @@ class APICManager(object):
 
             # Add EPG to physical domain
             phys_dn = self.phys_domain[DN_KEY]
-            self.apic.fvRsDomAtt.create(tenant_id, self.app_profile_name, epg_uid, phys_dn)
+            self.apic.fvRsDomAtt.create(
+                tenant_id, self.app_profile_name, epg_uid, phys_dn)
         except (cexc.ApicResponseNotOk, KeyError):
             with excutils.save_and_reraise_exception():
                 # Delete the EPG
-                self.apic.fvAEPg.delete(tenant_id, self.app_profile_name, epg_uid)
+                self.apic.fvAEPg.delete(
+                    tenant_id, self.app_profile_name, epg_uid)
 
         # Stick it in the DB
         epg = self.db.write_epg_for_network(network_id, epg_uid)
@@ -468,7 +470,8 @@ class APICManager(object):
                     self.apic.fvRsProv.delete(tenant_id, self.app_profile_name,
                                               epg_id, contract_id)
         else:
-            self.apic.fvRsCons.create(tenant_id, self.app_profile_name, epg_id, contract_id)
+            self.apic.fvRsCons.create(
+                tenant_id, self.app_profile_name, epg_id, contract_id)
 
     def delete_contract_for_epg(self, tenant_id, epg_id,
                                 contract_id, provider=False):
@@ -478,19 +481,22 @@ class APICManager(object):
         consumer from the DB and set that as the new contract provider.
         """
         if provider:
-            self.apic.fvRsProv.delete(tenant_id, self.app_profile_name, epg_id, contract_id)
+            self.apic.fvRsProv.delete(
+                tenant_id, self.app_profile_name, epg_id, contract_id)
             self.db.unset_provider_contract(epg_id)
             # Pick out another EPG to set as contract provider
             epg = self.db.get_an_epg(epg_id)
             self.update_contract_for_epg(tenant_id, epg.epg_id,
                                          contract_id, True)
         else:
-            self.apic.fvRsCons.delete(tenant_id, self.app_profile_name, epg_id, contract_id)
+            self.apic.fvRsCons.delete(
+                tenant_id, self.app_profile_name, epg_id, contract_id)
 
     def update_contract_for_epg(self, tenant_id, epg_id,
                                 contract_id, provider=False):
         """Updates the contract for an End Point Group."""
-        self.apic.fvRsCons.delete(tenant_id, self.app_profile_name, epg_id, contract_id)
+        self.apic.fvRsCons.delete(
+            tenant_id, self.app_profile_name, epg_id, contract_id)
         self.set_contract_for_epg(tenant_id, epg_id, contract_id, provider)
 
     def create_tenant_contract(self, tenant_id):
@@ -561,11 +567,13 @@ class APICManager(object):
         pdn = PORT_DN_PATH % (switch, port)
 
         # Check if exists
-        patt = self.apic.fvRsPathAtt.get(tenant_id, self.app_profile_name, eid, pdn)
+        patt = self.apic.fvRsPathAtt.get(
+            tenant_id, self.app_profile_name, eid, pdn)
         if not patt:
-            self.apic.fvRsPathAtt.create(tenant_id, self.app_profile_name, eid, pdn,
-                                         encap=encap, mode="regular",
-                                         instrImedcy="immediate")
+            self.apic.fvRsPathAtt.create(
+                tenant_id, self.app_profile_name, eid, pdn,
+                encap=encap, mode="regular",
+                instrImedcy="immediate")
 
     def add_router_interface(self, tenant_id, router_id,
                              network_id, subnet_id):
@@ -597,19 +605,19 @@ class APICManager(object):
                                      contract.contract_id,
                                      epg.provider)
 
+
 class APICNameMapper(object):
-    def __init__(self, apic_manager, strategy = NAMING_STRATEGY_UUID):
+    def __init__(self, apic_manager, strategy=NAMING_STRATEGY_UUID):
         self.apic_manager = apic_manager
         self.strategy = strategy
         self.keystone = None
         self.tenants = {}
 
     def tenant(self, context, tenant_id):
-        apic_tenant_id = tenant_id
-
+        tenant_name = None
         try:
             if tenant_id in self.tenants:
-                apic_tenant_id = self.tenants.get(tenant_id)
+                tenant_name = self.tenants.get(tenant_id)
             else:
                 if self.keystone is None:
                     keystone_conf = cfg.CONF.keystone_authtoken
@@ -619,87 +627,89 @@ class APICNameMapper(object):
                         keystone_conf.auth_port))
                     username = keystone_conf.admin_user
                     password = keystone_conf.admin_password
-                    tenant_name = keystone_conf.admin_tenant_name
-                    self.keystone = keyclient.Client(auth_url=auth_url,
-                            username=username,
-                            password=password,
-                            tenant_name=tenant_name)
+                    project_name = keystone_conf.admin_tenant_name
+                    self.keystone = keyclient.Client(
+                        auth_url=auth_url,
+                        username=username,
+                        password=password,
+                        tenant_name=project_name)
                 for tenant in self.keystone.tenants.list():
                     self.tenants[tenant.id] = tenant.name
                     if tenant.id == tenant_id:
-                        if self.strategy == NAMING_STRATEGY_NAMES:
-                            apic_tenant_id = tenant.name
-                        elif self.strategy == NAMING_STRATEGY_UUID:
-                            apic_tenant_id = tenant.name + \
-                                    " - " + \
-                                    apic_tenant_id
+                        tenant_name = tenant.name
         except Exception:
             with excutils.save_and_reraise_exception() as ctxt:
                 ctxt.reraise = False
                 LOG.exception(_("Exception in looking up tenant name %r"),
-                        tenant_id)
+                              tenant_id)
 
+        apic_tenant_id = tenant_id
+        if tenant_name:
+            if self.strategy == NAMING_STRATEGY_NAMES:
+                apic_tenant_id = tenant_name
+            elif self.strategy == NAMING_STRATEGY_UUID:
+                apic_tenant_id = tenant_name + "-" + apic_tenant_id
         return apic_tenant_id
 
     def network(self, context, network_id):
-        apic_network_id = network_id
-
+        network_name = None
         try:
             network = context._plugin.get_network(
-                    context._plugin_context, network_id)
-            if network['name']:
-                if self.strategy == NAMING_STRATEGY_NAMES:
-                    apic_network_id = network['name']
-                elif self.strategy == NAMING_STRATEGY_UUID:
-                    apic_network_id = network['name'] + \
-                            " - " + \
-                            apic_network_id
+                context._plugin_context, network_id)
+            network_name = network['name']
         except Exception:
             with excutils.save_and_reraise_exception() as ctxt:
                 ctxt.reraise = False
                 LOG.exception(_("Exception in looking up network name %r"),
-                        network_id)
+                              network_id)
 
+        apic_network_id = network_id
+        if network_name:
+            if self.strategy == NAMING_STRATEGY_NAMES:
+                apic_network_id = network_name
+            elif self.strategy == NAMING_STRATEGY_UUID:
+                apic_network_id = \
+                    network_name + "-" + apic_network_id
         return apic_network_id
 
     def subnet(self, context, subnet_id):
-        apic_subnet_id = subnet_id
-
+        subnet_name = None
         try:
             subnet = context._plugin.get_subnet(
-                    context._plugin_context, subnet_id)
-            if subnet['name']:
-                if self.strategy == NAMING_STRATEGY_NAMES:
-                    apic_subnet_id = subnet['name']
-                elif self.strategy == NAMING_STRATEGY_UUID:
-                    apic_subnet_id = subnet['name'] + \
-                            " - " + \
-                            apic_subnet_id
+                context._plugin_context, subnet_id)
+            subnet_name = subnet['name']
         except Exception:
             with excutils.save_and_reraise_exception() as ctxt:
                 ctxt.reraise = False
                 LOG.exception(_("Exception in looking up subnet name %r"),
-                        subnet_id)
+                              subnet_id)
 
+        apic_subnet_id = subnet_id
+        if subnet_name:
+            if self.strategy == NAMING_STRATEGY_NAMES:
+                apic_subnet_id = subnet_name
+            elif self.strategy == NAMING_STRATEGY_UUID:
+                apic_subnet_id = \
+                    subnet_name + "-" + apic_subnet_id
         return apic_subnet_id
 
     def port(self, context, port_id):
-        apic_port_id = port_id
-
+        port_name = None
         try:
             port = context._plugin.get_port(
-                    context._plugin_context, port_id)
-            if port['name']:
-                if self.strategy == NAMING_STRATEGY_NAMES:
-                    apic_port_id = port['name']
-                elif self.strategy == NAMING_STRATEGY_UUID:
-                    apic_port_id = port['name'] + \
-                            " - " + \
-                            apic_port_id
+                context._plugin_context, port_id)
+            port_name = port['name']
         except Exception:
             with excutils.save_and_reraise_exception() as ctxt:
                 ctxt.reraise = False
                 LOG.exception(_("Exception in looking up port name name %r"),
-                        port_id)
+                              port_id)
 
+        apic_port_id = port_id
+        if port_name:
+            if self.strategy == NAMING_STRATEGY_NAMES:
+                apic_port_id = port_name
+            elif self.strategy == NAMING_STRATEGY_UUID:
+                apic_port_id = \
+                    port_name + "-" + apic_port_id
         return apic_port_id
