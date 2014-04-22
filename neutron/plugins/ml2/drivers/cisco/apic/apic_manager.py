@@ -607,83 +607,99 @@ class APICNameMapper(object):
     def tenant(self, context, tenant_id):
         apic_tenant_id = tenant_id
 
-        if self.strategy == NAMING_STRATEGY_NAMES:
-            try:
-                if tenant_id in self.tenants:
-                    apic_tenant_id = self.tenants.get(tenant_id)
-                else:
-                    if self.keystone is None:
-                        keystone_conf = cfg.CONF.keystone_authtoken
-                        auth_url = ('%s://%s:%s/v2.0/' % (
-                            keystone_conf.auth_protocol,
-                            keystone_conf.auth_host,
-                            keystone_conf.auth_port))
-                        username = keystone_conf.admin_user
-                        password = keystone_conf.admin_password
-                        tenant_name = keystone_conf.admin_tenant_name
-                        self.keystone = keyclient.Client(auth_url=auth_url,
-                                username=username,
-                                password=password,
-                                tenant_name=tenant_name)
-                    for tenant in self.keystone.tenants.list():
-                        self.tenants[tenant.id] = tenant.name
-                        if tenant.id == tenant_id:
+        try:
+            if tenant_id in self.tenants:
+                apic_tenant_id = self.tenants.get(tenant_id)
+            else:
+                if self.keystone is None:
+                    keystone_conf = cfg.CONF.keystone_authtoken
+                    auth_url = ('%s://%s:%s/v2.0/' % (
+                        keystone_conf.auth_protocol,
+                        keystone_conf.auth_host,
+                        keystone_conf.auth_port))
+                    username = keystone_conf.admin_user
+                    password = keystone_conf.admin_password
+                    tenant_name = keystone_conf.admin_tenant_name
+                    self.keystone = keyclient.Client(auth_url=auth_url,
+                            username=username,
+                            password=password,
+                            tenant_name=tenant_name)
+                for tenant in self.keystone.tenants.list():
+                    self.tenants[tenant.id] = tenant.name
+                    if tenant.id == tenant_id:
+                        if self.strategy == NAMING_STRATEGY_NAMES:
                             apic_tenant_id = tenant.name
-            except Exception:
-                with excutils.save_and_reraise_exception() as ctxt:            
-                    ctxt.reraise = False
-                    LOG.exception(_("Exception in looking up tenant name %r"),
-                            tenant_id)
+                        elif self.strategy == NAMING_STRATEGY_UUID:
+                            apic_tenant_id = tenant.name + \
+                                    " - " + \
+                                    apic_tenant_id
+        except Exception:
+            with excutils.save_and_reraise_exception() as ctxt:
+                ctxt.reraise = False
+                LOG.exception(_("Exception in looking up tenant name %r"),
+                        tenant_id)
 
         return apic_tenant_id
 
     def network(self, context, network_id):
         apic_network_id = network_id
 
-        if self.strategy == NAMING_STRATEGY_NAMES:
-            try:
-                network = context._plugin.get_network(
-                        context._plugin_context, network_id)
-                if network['name']:
+        try:
+            network = context._plugin.get_network(
+                    context._plugin_context, network_id)
+            if network['name']:
+                if self.strategy == NAMING_STRATEGY_NAMES:
                     apic_network_id = network['name']
-            except Exception:
-                with excutils.save_and_reraise_exception() as ctxt:            
-                    ctxt.reraise = False
-                    LOG.exception(_("Exception in looking up network name %r"),
-                            network_id)
+                elif self.strategy == NAMING_STRATEGY_UUID:
+                    apic_network_id = network['name'] + \
+                            " - " + \
+                            apic_network_id
+        except Exception:
+            with excutils.save_and_reraise_exception() as ctxt:
+                ctxt.reraise = False
+                LOG.exception(_("Exception in looking up network name %r"),
+                        network_id)
 
         return apic_network_id
 
     def subnet(self, context, subnet_id):
         apic_subnet_id = subnet_id
 
-        if self.strategy == NAMING_STRATEGY_NAMES:
-            try:
-                subnet = context._plugin.get_subnet(
-                        context._plugin_context, subnet_id)
-                if subnet['name']:
+        try:
+            subnet = context._plugin.get_subnet(
+                    context._plugin_context, subnet_id)
+            if subnet['name']:
+                if self.strategy == NAMING_STRATEGY_NAMES:
                     apic_subnet_id = subnet['name']
-            except Exception:
-                with excutils.save_and_reraise_exception() as ctxt:            
-                    ctxt.reraise = False
-                    LOG.exception(_("Exception in looking up subnet name %r"),
-                            subnet_id)
+                elif self.strategy == NAMING_STRATEGY_UUID:
+                    apic_subnet_id = subnet['name'] + \
+                            " - " + \
+                            apic_subnet_id
+        except Exception:
+            with excutils.save_and_reraise_exception() as ctxt:
+                ctxt.reraise = False
+                LOG.exception(_("Exception in looking up subnet name %r"),
+                        subnet_id)
 
         return apic_subnet_id
 
     def port(self, context, port_id):
         apic_port_id = port_id
 
-        if self.strategy == NAMING_STRATEGY_NAMES:
-            try:
-                port = context._plugin.get_port(
-                        context._plugin_context, port_id)
-                if port['name']:
+        try:
+            port = context._plugin.get_port(
+                    context._plugin_context, port_id)
+            if port['name']:
+                if self.strategy == NAMING_STRATEGY_NAMES:
                     apic_port_id = port['name']
-            except Exception:
-                with excutils.save_and_reraise_exception() as ctxt:            
-                    ctxt.reraise = False
-                    LOG.exception(_("Exception in looking up port name name %r"),
-                            port_id)
+                elif self.strategy == NAMING_STRATEGY_UUID:
+                    apic_port_id = port['name'] + \
+                            " - " + \
+                            apic_port_id
+        except Exception:
+            with excutils.save_and_reraise_exception() as ctxt:
+                ctxt.reraise = False
+                LOG.exception(_("Exception in looking up port name name %r"),
+                        port_id)
 
         return apic_port_id
