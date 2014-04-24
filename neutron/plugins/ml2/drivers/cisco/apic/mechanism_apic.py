@@ -24,7 +24,10 @@ from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.common import constants
 from neutron.plugins.ml2 import driver_api as api
+
 from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
+from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper
+from neutron.plugins.ml2.drivers.cisco.apic import config
 
 
 LOG = log.getLogger(__name__)
@@ -32,38 +35,26 @@ LOG = log.getLogger(__name__)
 
 class APICMechanismDriver(api.MechanismDriver):
 
+    @staticmethod
+    def get_apic_manager():
+        apic_config = cfg.CONF.ml2_cisco_apic
+        network_config = {
+            'vlan_ranges': cfg.CONF.ml2_type_vlan.network_vlan_ranges,
+            'switch_dict': config.switch_dictionary(),
+        }
+        return apic_manager.APICManager(apic_config, network_config)
+
+    @staticmethod
+    def get_apic_name_mapper(apic_manager):
+        apic_config = cfg.CONF.ml2_cisco_apic
+        return apic_mapper.APICNameMapper(
+            apic_manager, apic_config.apic_name_mapping)
+
     def initialize(self):
-        self.apic_manager = apic_manager.APICManager()
-
-        self.name_mapper = apic_manager.APICNameMapper(
-            self.apic_manager,
-            cfg.CONF.ml2_cisco_apic.apic_name_mapping)
-
-        # Create a VMM domain and VLAN namespace
-        # Get vlan ns name
-        ns_name = cfg.CONF.ml2_cisco_apic.apic_vlan_ns_name
-        # Grab vlan ranges
-        vlan_ranges = cfg.CONF.ml2_type_vlan.network_vlan_ranges[0]
-        (vlan_min, vlan_max) = vlan_ranges.split(':')[-2:]
-        # Create VLAN namespace
-        vlan_ns = self.apic_manager.ensure_vlan_ns_created_on_apic(ns_name,
-                                                                   vlan_min,
-                                                                   vlan_max)
-        vmm_name = cfg.CONF.ml2_cisco_apic.apic_vmm_domain
-        phys_name = vmm_name
-        # Create Physical domain
-        self.apic_manager.ensure_phys_domain_created_on_apic(
-            phys_name, vlan_ns)
-
-        # Create entity profile
-        ent_name = cfg.CONF.ml2_cisco_apic.apic_entity_profile
-        self.apic_manager.ensure_entity_profile_created_on_apic(ent_name)
-
-        # Create function profile
-        func_name = cfg.CONF.ml2_cisco_apic.apic_function_profile
-        self.apic_manager.ensure_function_profile_created_on_apic(func_name)
-
-        # Create infrastructure on apic
+        # initialize apic
+        self.apic_manager = APICMechanismDriver.get_apic_manager()
+        self.name_mapper = APICMechanismDriver.get_apic_name_mapper(
+            self.apic_manager)
         self.apic_manager.ensure_infra_created_on_apic()
 
     def _perform_port_operations(self, context):
@@ -123,8 +114,8 @@ class APICMechanismDriver(api.MechanismDriver):
         tenant_id = self.name_mapper.tenant(context, tenant_id)
         network_id = self.name_mapper.network(context, network_id)
 
+        # Create BD and EPG for this network
         self.apic_manager.ensure_bd_created_on_apic(tenant_id, network_id)
-        # Create EPG for this network
         self.apic_manager.ensure_epg_created_for_network(tenant_id, network_id)
 
     def delete_network_postcommit(self, context):
@@ -135,8 +126,9 @@ class APICMechanismDriver(api.MechanismDriver):
         tenant_id = self.name_mapper.tenant(context, tenant_id)
         network_id = self.name_mapper.network(context, network_id)
 
-        self.apic_manager.delete_bd_on_apic(tenant_id, network_id)
+        # Delete BD and EPG for this network
         self.apic_manager.delete_epg_for_network(tenant_id, network_id)
+        self.apic_manager.delete_bd_on_apic(tenant_id, network_id)
 
     def create_subnet_postcommit(self, context):
         tenant_id = context.current['tenant_id']
@@ -150,5 +142,6 @@ class APICMechanismDriver(api.MechanismDriver):
         tenant_id = self.name_mapper.tenant(context, tenant_id)
         network_id = self.name_mapper.network(context, network_id)
 
-        self.apic_manager.ensure_subnet_created_on_apic(tenant_id, network_id,
-                                                        gateway_ip)
+        # Create subnet on BD
+        self.apic_manager.ensure_subnet_created_on_apic(
+            tenant_id, network_id, gateway_ip)

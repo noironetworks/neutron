@@ -21,6 +21,8 @@ from neutron.db import api as db_api
 from neutron.db import model_base
 from neutron.db import models_v2
 
+from neutron.openstack.common import lockutils
+
 
 class NetworkEPG(model_base.BASEV2):
 
@@ -57,6 +59,41 @@ class TenantContract(model_base.BASEV2, models_v2.HasTenant):
     __table_args__ = (sa.PrimaryKeyConstraint('tenant_id'),)
     contract_id = sa.Column(sa.String(64), nullable=False)
     filter_id = sa.Column(sa.String(64), nullable=False)
+
+
+class HostLink(model_base.BASEV2):
+
+    """Connectivity of host links"""
+
+    __tablename__ = 'cisco_ml2_apic_host_links'
+
+    host = sa.Column(sa.String(255), nullable=False, primary_key=True)
+    ifname = sa.Column(sa.String(64), nullable=False, primary_key=True)
+    ifmac = sa.Column(sa.String(32), nullable=True)
+    switch = sa.Column(sa.Integer(), nullable=False)
+    module = sa.Column(sa.Integer(), nullable=False)
+    port = sa.Column(sa.Integer(), nullable=False)
+
+
+class ApicName(model_base.BASEV2):
+
+    """Mapping of names created on the APIC."""
+
+    __tablename__ = 'cisco_ml2_apic_namemap'
+
+    neutron_id = sa.Column(sa.String(36), nullable=False, primary_key=True)
+    neutron_type = sa.Column(sa.String(32), nullable=False, primary_key=True)
+    apic_name = sa.Column(sa.String(255), nullable=False)
+
+
+class ApicKey(model_base.BASEV2):
+
+    """Persistent config on APIC that needs to be in sync with driver."""
+
+    __tablename__ = 'cisco_ml2_apic_keymap'
+
+    key = sa.Column(sa.String(255), nullable=False, primary_key=True)
+    value = sa.Column(sa.String(255), nullable=False)
 
 
 class ApicDbModel(object):
@@ -100,7 +137,7 @@ class ApicDbModel(object):
                           hpselc_id=hpselc_id, module=module,
                           from_port=from_port, to_port=to_port)
         self.session.add(row)
-        self.session.flush()
+        self._flush()
 
     def get_provider_contract(self):
         """Returns  provider EPG from the DB if found."""
@@ -114,7 +151,7 @@ class ApicDbModel(object):
         if epg:
             epg.provider = True
             self.session.merge(epg)
-            self.session.flush()
+            self._flush()
 
     def unset_provider_contract(self, epg_id):
         """Sets an EPG to be a contract consumer."""
@@ -123,7 +160,7 @@ class ApicDbModel(object):
         if epg:
             epg.provider = False
             self.session.merge(epg)
-            self.session.flush()
+            self._flush()
 
     def get_an_epg(self, exception):
         """Returns an EPG from the DB that does not match the id specified."""
@@ -145,13 +182,13 @@ class ApicDbModel(object):
         epg = NetworkEPG(network_id=network_id, epg_id=epg_uid,
                          segmentation_id=segmentation_id)
         self.session.add(epg)
-        self.session.flush()
+        self._flush()
         return epg
 
     def delete_epg(self, epg):
         """Deletes an EPG from the DB."""
         self.session.delete(epg)
-        self.session.flush()
+        self._flush()
 
     def get_contract_for_tenant(self, tenant_id):
         """Returns the specified tenant's contract."""
@@ -164,7 +201,7 @@ class ApicDbModel(object):
                                   contract_id=contract_id,
                                   filter_id=filter_id)
         self.session.add(contract)
-        self.session.flush()
+        self._flush()
 
         return contract
 
@@ -174,4 +211,70 @@ class ApicDbModel(object):
             node_id=node_id).first()
         if profile:
             self.session.delete(profile)
-            self.session.flush()
+            self._flush()
+
+    def add_hostlink(self, host, ifname, ifmac, switch, module, port):
+        row = HostLink(host=host, ifname=ifname, ifmac=ifmac,
+                       switch=switch, module=module, port=port)
+        self.session.merge(row)
+        self._flush()
+
+    def get_hostlinks(self):
+        return self.session.query(HostLink).all()
+
+    def get_hostlink(self, host, ifname):
+        return self.session.query(HostLink).filter_by(
+            host=host, ifname=ifname).first()
+
+    def get_hostlinks_for_host(self, host):
+        return self.session.query(HostLink).filter_by(
+            host=host).all()
+
+    def delete_hostlink(self, host, ifname):
+        profile = self.session.query(HostLink).filter_by(
+            host=host, ifname=ifname).first()
+        if profile:
+            self.session.delete(profile)
+            self._flush()
+
+    def add_apic_name(self, neutron_id, neutron_type, apic_name):
+        row = ApicName(neutron_id=neutron_id,
+                       neutron_type=neutron_type,
+                       apic_name=apic_name)
+        self.session.add(row)
+        self._flush()
+
+    def get_apic_names(self):
+        return self.session.query(ApicName).all()
+
+    def get_apic_name(self, neutron_id, neutron_type):
+        return self.session.query(ApicName).filter_by(
+            neutron_id=neutron_id, neutron_type=neutron_type).first()
+
+    def delete_apic_name(self, neutron_id, neutron_type):
+        profile = self.session.query(ApicName).filter_by(
+            neutron_id=neutron_id, neutron_type=neutron_type).first()
+        if profile:
+            self.session.delete(profile)
+            self._flush()
+
+    def add_apic_config(self, key, value):
+        row = ApicKey(key=key, value=value)
+        self.session.add(row)
+        self._flush()
+
+    def get_apic_configs(self):
+        return self.session.query(ApicKey).all()
+
+    def get_apic_config(self, key):
+        return self.session.query(ApicKey).filter_by(key=key).first()
+
+    def delete_apic_config(self, key):
+        profile = self.session.query(ApicKey).filter_by(key=key).first()
+        if profile:
+            self.session.delete(profile)
+            self._flush()
+
+    @lockutils.synchronized('apic_manager_flush')
+    def _flush(self):
+        self.session.flush()

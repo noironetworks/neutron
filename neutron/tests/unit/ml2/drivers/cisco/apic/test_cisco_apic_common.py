@@ -180,6 +180,15 @@ class ConfigMixin(object):
         for opt, val in ml2_opts.items():
                 ml2_config.cfg.CONF.set_override(opt, val, 'ml2')
 
+        # Configure the ML2 type_vlan opts
+        ml2_type_vlan_opts = {
+            'vlan_ranges': ['physnet1:100:199'],
+        }
+        cfg.CONF.set_override('network_vlan_ranges',
+                              ml2_type_vlan_opts['vlan_ranges'],
+                              'ml2_type_vlan')
+        self.vlan_ranges = ml2_type_vlan_opts['vlan_ranges']
+
         # Configure the Cisco APIC mechanism driver
         apic_test_config = {
             'apic_host': APIC_HOST,
@@ -195,14 +204,25 @@ class ConfigMixin(object):
         }
         for opt, val in apic_test_config.items():
             cfg.CONF.set_override(opt, val, 'ml2_cisco_apic')
+        self.apic_config = cfg.CONF.ml2_cisco_apic
 
+        # Configure switch topology
         apic_switch_cfg = {
-            'apic_switch:east01': {'ubuntu1,ubuntu2': ['3/11']},
-            'apic_switch:east02': {'rhel01,rhel02': ['4/21'],
-                                   'rhel03': ['4/22']},
+            'apic_switch:101': {'ubuntu1,ubuntu2': ['3/11']},
+            'apic_switch:102': {'rhel01,rhel02': ['4/21'],
+                                'rhel03': ['4/22']},
         }
-        self.mocked_parser = mock.patch.object(cfg,
-                                               'MultiConfigParser').start()
+        self.switch_dict = {
+            '101': {
+                '3/11': ['ubuntu1', 'ubuntu2'],
+            },
+            '102': {
+                '4/21': ['rhel01', 'rhel02'],
+                '4/22': ['rhel03'],
+            },
+        }
+        self.mocked_parser = mock.patch.object(
+            cfg, 'MultiConfigParser').start()
         self.mocked_parser.return_value.read.return_value = [apic_switch_cfg]
         self.mocked_parser.return_value.parsed = [apic_switch_cfg]
 

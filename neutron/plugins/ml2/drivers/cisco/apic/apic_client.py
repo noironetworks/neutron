@@ -67,6 +67,9 @@ class ManagedObjectClass(object):
         'fvRsDomAtt': ManagedObjectName('fvAEPg', 'rsdomAtt-[%s]'),
         'fvRsPathAtt': ManagedObjectName('fvAEPg', 'rspathAtt-[%s]'),
 
+        'vzAny': ManagedObjectName('fvCtx', 'any'),
+        'vzRsAnyToCons': ManagedObjectName('vzAny', 'rsanyToCons-%s'),
+        'vzRsAnyToProv': ManagedObjectName('vzAny', 'rsanyToProv-%s'),
         'vzBrCP': ManagedObjectName('fvTenant', 'brc-%s'),
         'vzSubj': ManagedObjectName('vzBrCP', 'subj-%s'),
         'vzFilter': ManagedObjectName('fvTenant', 'flt-%s'),
@@ -299,6 +302,8 @@ class ApicSession(object):
         pwd = pwd or self.password
         name_pwd = self._make_data('aaaUser', name=usr, pwd=pwd)
         url = self._api_url('aaaLogin')
+        self.cookie = {}
+
         try:
             response = self.session.post(url, data=name_pwd, timeout=10.0)
         except requests.exceptions.Timeout:

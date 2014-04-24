@@ -57,6 +57,13 @@ class Manager(periodic_task.PeriodicTasks):
         """
         pass
 
+    def report_send(self, context):
+        """Function to send report state, when used as a manager for Service
+
+        Child classes can override this method.
+        """
+        pass
+
 
 def validate_post_plugin_load():
     """Checks if the configuration variables are valid.

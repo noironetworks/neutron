@@ -39,7 +39,11 @@ class TestCiscoApicManager(base.BaseTestCase,
         mocked.DbModelMixin.set_up_mocks(self)
 
         self.mock_apic_manager_login_responses()
-        self.mgr = apic_manager.APICManager()
+        self.mgr = apic_manager.APICManager(
+            self.apic_config, {
+                'switch_dict': self.switch_dict,
+                'vlan_ranges': self.vlan_ranges,
+            })
         self.session = self.mgr.apic.session
         self.assert_responses_drained()
         self.reset_reponses()
@@ -193,11 +197,24 @@ class TestCiscoApicManager(base.BaseTestCase,
         new_dom = self.mgr.vmm_domain['name']
         self.assertEqual(new_dom, dom)
 
+    def _infra_created_setup(self):
+        ns = mocked.APIC_VLAN_NAME
+        mode = mocked.APIC_VLAN_MODE
+        self.mock_response_for_get('fvnsVlanInstP', name=ns, mode=mode)
+        self.mock_response_for_get('physDomP', name=mocked.APIC_DOMAIN)
+        self.mock_response_for_get('infraAttEntityP',
+                                   name=mocked.APIC_ATT_ENT_PROF)
+        self.mock_response_for_get('infraAccPortGrp',
+                                   name=mocked.APIC_ACC_PORT_GRP,
+                                   dn='dn')
+
     def test_ensure_infra_created_no_infra(self):
+        self._infra_created_setup()
         self.mgr.switch_dict = {}
         self.mgr.ensure_infra_created_on_apic()
 
     def _ensure_infra_created_seq1_setup(self):
+        self._infra_created_setup()
         am = 'neutron.plugins.ml2.drivers.cisco.apic.apic_manager.APICManager'
         np_create_for_switch = mock.patch(
             am + '.ensure_node_profile_created_for_switch').start()
@@ -247,6 +264,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assertEqual(np_create_for_switch.call_count, 1)
 
     def _ensure_infra_created_seq2_setup(self):
+        self._infra_created_setup()
         am = 'neutron.plugins.ml2.drivers.cisco.apic.apic_manager.APICManager'
         np_create_for_switch = mock.patch(
             am + '.ensure_node_profile_created_for_switch').start()

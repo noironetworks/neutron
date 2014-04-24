@@ -19,13 +19,11 @@ import itertools
 import uuid
 
 from keystoneclient.v2_0 import client as keyclient
-from oslo.config import cfg
 
 from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.ml2.drivers.cisco.apic import apic_client
 from neutron.plugins.ml2.drivers.cisco.apic import apic_model
-from neutron.plugins.ml2.drivers.cisco.apic import config
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
 
 
@@ -58,18 +56,18 @@ class APICManager(object):
     managed objects and contains workflows to implement these
     translations.
     """
-    def __init__(self):
+    def __init__(self, apic_config, network_config):
         self.db = apic_model.ApicDbModel()
-
-        apic_conf = cfg.CONF.ml2_cisco_apic
-        self.switch_dict = config.create_switch_dictionary()
+        self.apic_config = apic_config
+        self.vlan_ranges = network_config['vlan_ranges']
+        self.switch_dict = network_config['switch_dict']
 
         # Connect to the the APIC
         self.apic = apic_client.RestClient(
-            apic_conf.apic_host,
-            apic_conf.apic_port,
-            apic_conf.apic_username,
-            apic_conf.apic_password
+            apic_config.apic_host,
+            apic_config.apic_port,
+            apic_config.apic_username,
+            apic_config.apic_password
         )
 
         self.port_profiles = {}
@@ -77,53 +75,70 @@ class APICManager(object):
         self.phys_domain = None
         self.vlan_ns = None
         self.node_profiles = {}
-        self.app_profile_name = apic_conf.apic_app_profile_name
+        self.app_profile_name = apic_config.apic_app_profile_name
         self.entity_profile = None
         self.function_profile = None
-        self.clear_node_profiles = apic_conf.apic_clear_node_profiles
+        self.clear_node_profiles = apic_config.apic_clear_node_profiles
 
     def ensure_infra_created_on_apic(self):
         """Ensure the infrastructure is setup.
 
+        First create all common entities, and then
         Loop over the switch dictionary from the config and
         setup profiles for switches, modules and ports
         """
-        # Loop over switches
+
+        # Create VLAN namespace
+        vlan_ns_name = self.apic_config.apic_vlan_ns_name
+        vlan_range = self.vlan_ranges[0]
+        (vlan_min, vlan_max) = vlan_range.split(':')[-2:]
+        vlan_ns = self.ensure_vlan_ns_created_on_apic(
+            vlan_ns_name, vlan_min, vlan_max)
+
+        # Create domain
+        phys_name = self.apic_config.apic_vmm_domain
+        self.ensure_phys_domain_created_on_apic(phys_name, vlan_ns)
+
+        # Create entity profile
+        ent_name = self.apic_config.apic_entity_profile
+        self.ensure_entity_profile_created_on_apic(ent_name)
+
+        # Create function profile
+        func_name = self.apic_config.apic_function_profile
+        self.ensure_function_profile_created_on_apic(func_name)
+
+        # create infrastructure elements for all switches
         for switch in self.switch_dict:
-            # Create a node profile for this switch
+            self.ensure_infra_created_for_switch(switch)
+
+    def ensure_infra_created_for_switch(self, switch):
+            # Create a node and profile for this switch
             self.ensure_node_profile_created_for_switch(switch)
-
-            # Check if a port profile exists for this node
             ppname = self.check_infra_port_profiles(switch)
-
-            # Gather port ranges for this switch
             modules = self.gather_infra_module_ports(switch)
 
             # Setup each module and port range
             for module in modules:
-                profile = self.db.get_profile_for_module(switch, ppname,
-                                                         module)
+                profile = self.db.get_profile_for_module(
+                    switch, ppname, module)
                 if not profile:
-                    # Create host port selector for this module
                     hname = uuid.uuid4()
                     try:
                         self.apic.infraHPortS.create(ppname, hname, 'range')
-                        # Add relation to the function profile
                         fpdn = self.function_profile[DN_KEY]
-                        self.apic.infraRsAccBaseGrp.create(ppname, hname,
-                                                           'range', tDn=fpdn)
+                        self.apic.infraRsAccBaseGrp.create(
+                            ppname, hname, 'range', tDn=fpdn)
                         modules[module].sort()
                     except (cexc.ApicResponseNotOk, KeyError):
                         with excutils.save_and_reraise_exception():
-                            self.apic.infraHPortS.delete(ppname, hname,
-                                                         'range')
+                            self.apic.infraHPortS.delete(
+                                ppname, hname, 'range')
                 else:
                     hname = profile.hpselc_id
 
-                ranges = group_by_ranges(modules[module])
                 # Add this module and ports to the profile
+                ranges = group_by_ranges(modules[module])
                 for prange in ranges:
-                    # Check if this port block is already added to the profile
                     if not self.db.get_profile_for_module_and_ports(
                             switch, ppname, module, prange[0], prange[-1]):
                         # Create port block for this port range
@@ -173,25 +188,43 @@ class APICManager(object):
 
         return modules
 
-    def ensure_context_unenforced(self, tenant_id=TENANT_COMMON,
-                                  name=CONTEXT_DEFAULT):
+    def ensure_context_unenforced(self, tenant_id, ctx_id):
         """Set the specified tenant's context to unenforced."""
-        ctx = self.apic.fvCtx.get(tenant_id, name)
+        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
         if not ctx:
-            self.apic.fvCtx.create(tenant_id, name,
-                                   pcEnfPref=CONTEXT_UNENFORCED)
+            self.apic.fvCtx.create(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
         elif ctx['pcEnfPref'] != CONTEXT_UNENFORCED:
-            self.apic.fvCtx.update(tenant_id, name,
-                                   pcEnfPref=CONTEXT_UNENFORCED)
+            self.apic.fvCtx.update(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
 
-    def ensure_context_enforced(self, tenant_id=TENANT_COMMON,
-                                name=CONTEXT_DEFAULT):
+    def ensure_context_enforced(self, tenant_id, ctx_id):
         """Set the specified tenant's context to enforced."""
-        ctx = self.apic.fvCtx.get(tenant_id, name)
+        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
         if not ctx:
-            self.apic.fvCtx.create(tenant_id, name, pcEnfPref=CONTEXT_ENFORCED)
+            self.apic.fvCtx.create(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
         elif ctx['pcEnfPref'] != CONTEXT_ENFORCED:
-            self.apic.fvCtx.update(tenant_id, name, pcEnfPref=CONTEXT_ENFORCED)
+            self.apic.fvCtx.update(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
+
+    def ensure_context_any_contract(self, tenant_id, ctx_id, contract_id):
+        """Set the specified tenant's context to enforced."""
+        vzany = self.apic.vzAny.get(tenant_id, ctx_id)
+        if not vzany:
+            vzany = self.apic.vzAny.create(tenant_id, ctx_id)
+
+        provider = self.apic.vzRsAnyToProv.get(
+            tenant_id, ctx_id, contract_id)
+        if not provider:
+            self.apic.vzRsAnyToProv.create(
+                tenant_id, ctx_id, contract_id)
+
+        consumer = self.apic.vzRsAnyToCons.get(
+            tenant_id, ctx_id, contract_id)
+        if not consumer:
+            self.apic.vzRsAnyToCons.create(
+                tenant_id, ctx_id, contract_id)
 
     def ensure_entity_profile_created_on_apic(self, name):
         """Create the infrastructure entity profile."""
@@ -285,7 +318,8 @@ class APICManager(object):
                 self.apic.vmmDomP.create(provider, vmm_name)
                 if vlan_ns:
                     vlan_ns_dn = vlan_ns[DN_KEY]
-                    # TODO: If we change back to vmm domain, need to revert
+                    # TODO(mandeep):
+                    # If we change back to vmm domain, need to revert
                     # self.apic.infraRsVlanNs.create(provider, vmm_name,
                     #                               tDn=vlan_ns_dn)
                     self.apic.infraRsVlanNs.create(vmm_name, tDn=vlan_ns_dn)
@@ -359,7 +393,7 @@ class APICManager(object):
             try:
                 self.apic.fvBD.create(tenant_id, bd_id)
                 # Add default context to the BD
-                self.ensure_context_enforced()
+                self.ensure_context_enforced(tenant_id, CONTEXT_DEFAULT)
                 self.apic.fvRsCtx.create(tenant_id, bd_id,
                                          tnFvCtxName=CONTEXT_DEFAULT)
             except (cexc.ApicResponseNotOk, KeyError):
@@ -451,24 +485,26 @@ class APICManager(object):
             with excutils.save_and_reraise_exception():
                 self.apic.vzFilter.delete(tenant_id, fuuid)
 
+    def get_contract_for_epg(self, tenant_id, epg_id, contract_id):
+        return self.apic.fvRsProv.get(
+            tenant_id, self.app_profile_name, epg_id, contract_id)
+
     def set_contract_for_epg(self, tenant_id, epg_id,
                              contract_id, provider=False):
         """Set the contract for an EPG.
 
-        By default EPGs are consumers to a contract. Set provider flag
-        for a single EPG to act as a contract provider.
+        By default EPGs are consumers of a contract.
+        Set provider flag to True for the EPG to act as a provider.
         """
         if provider:
             try:
-                self.apic.fvRsProv.create(tenant_id, self.app_profile_name,
-                                          epg_id, contract_id)
+                self.apic.fvRsProv.create(
+                    tenant_id, self.app_profile_name, epg_id, contract_id)
                 self.db.set_provider_contract(epg_id)
-                self.make_tenant_contract_global(tenant_id)
             except (cexc.ApicResponseNotOk, KeyError):
                 with excutils.save_and_reraise_exception():
-                    self.make_tenant_contract_local(tenant_id)
-                    self.apic.fvRsProv.delete(tenant_id, self.app_profile_name,
-                                              epg_id, contract_id)
+                    self.apic.fvRsProv.delete(
+                        tenant_id, self.app_profile_name, epg_id, contract_id)
         else:
             self.apic.fvRsCons.create(
                 tenant_id, self.app_profile_name, epg_id, contract_id)
@@ -484,23 +520,12 @@ class APICManager(object):
             self.apic.fvRsProv.delete(
                 tenant_id, self.app_profile_name, epg_id, contract_id)
             self.db.unset_provider_contract(epg_id)
-            # Pick out another EPG to set as contract provider
-            epg = self.db.get_an_epg(epg_id)
-            self.update_contract_for_epg(tenant_id, epg.epg_id,
-                                         contract_id, True)
         else:
             self.apic.fvRsCons.delete(
                 tenant_id, self.app_profile_name, epg_id, contract_id)
 
-    def update_contract_for_epg(self, tenant_id, epg_id,
-                                contract_id, provider=False):
-        """Updates the contract for an End Point Group."""
-        self.apic.fvRsCons.delete(
-            tenant_id, self.app_profile_name, epg_id, contract_id)
-        self.set_contract_for_epg(tenant_id, epg_id, contract_id, provider)
-
-    def create_tenant_contract(self, tenant_id):
-        """Creates a tenant contract.
+    def get_router_contract(self, tenant_id):
+        """Creates a tenant contract for router
 
         Create a tenant contract if one doesn't exist. Also create a
         subject, filter and entry and set the filters to allow all
@@ -560,7 +585,7 @@ class APICManager(object):
         eid = epg.epg_id
 
         # Get attached switch and port for this host
-        host_config = config.get_switch_and_port_for_host(host_id)
+        host_config = self.get_switch_and_port_for_host(host_id)
         if not host_config:
             raise cexc.ApicHostNotConfigured(host=host_id)
         switch, port = host_config
@@ -577,139 +602,58 @@ class APICManager(object):
 
     def add_router_interface(self, tenant_id, router_id,
                              network_id, subnet_id):
-        # Setup tenant filters and contracts
-        contract = self.create_tenant_contract(tenant_id)
+        # Get contract and epg
+        contract = self.get_router_contract(tenant_id)
+        epg = self.ensure_epg_created_for_network(tenant_id, network_id)
 
-        # Check for a provider EPG
-        epg = self.ensure_epg_created_for_network(tenant_id,
-                                                  network_id)
-        if self.db.get_provider_contract():
-            # Set this network's EPG as a consumer
-            self.set_contract_for_epg(tenant_id, epg.epg_id,
-                                      contract.contract_id)
-        else:
-            # Set this network's EPG as a provider
-            self.set_contract_for_epg(tenant_id, epg.epg_id,
-                                      contract.contract_id,
-                                      True)
+        # Ensure that the router ctx and a router contract exists
+        self.ensure_context_enforced(tenant_id, router_id)
+        self.ensure_context_any_contract(
+            tenant_id, router_id, contract.contract_id)
+
+        # update corresponding BD's ctx to this router ctx
+        bd_id = network_id
+        self.apic.fvRsCtx.update(tenant_id, bd_id, tnFvCtxName=router_id)
+
+        # set the EPG to provide this contract
+        if not self.get_contract_for_epg(tenant_id, epg.epg_id,
+                                         contract.contract_id):
+            self.set_contract_for_epg(
+                tenant_id, epg.epg_id, contract.contract_id, True)
 
     def remove_router_interface(self, tenant_id, router_id,
                                 network_id, subnet_id):
         # Get contract and epg
-        contract = self.create_tenant_contract(tenant_id)
-        epg = self.ensure_epg_created_for_network(tenant_id,
-                                                  network_id)
+        contract = self.get_router_contract(tenant_id)
+        epg = self.ensure_epg_created_for_network(tenant_id, network_id)
 
         # Delete contract for this epg
-        self.delete_contract_for_epg(tenant_id, epg.epg_id,
-                                     contract.contract_id,
-                                     epg.provider)
+        self.delete_contract_for_epg(
+            tenant_id, epg.epg_id, contract.contract_id, epg.provider)
 
+        # set the BDs' ctx to default
+        bd_id = network_id
+        self.apic.fvRsCtx.update(
+            tenant_id, bd_id, tnFvCtxName=CONTEXT_DEFAULT)
 
-class APICNameMapper(object):
-    def __init__(self, apic_manager, strategy=NAMING_STRATEGY_UUID):
-        self.apic_manager = apic_manager
-        self.strategy = strategy
-        self.keystone = None
-        self.tenants = {}
+    def delete_router(self, tenant_id, router_id):
+        self.apic.fvCtx.delete(tenant_id, router_id)
 
-    def tenant(self, context, tenant_id):
-        tenant_name = None
-        try:
-            if tenant_id in self.tenants:
-                tenant_name = self.tenants.get(tenant_id)
-            else:
-                if self.keystone is None:
-                    keystone_conf = cfg.CONF.keystone_authtoken
-                    auth_url = ('%s://%s:%s/v2.0/' % (
-                        keystone_conf.auth_protocol,
-                        keystone_conf.auth_host,
-                        keystone_conf.auth_port))
-                    username = keystone_conf.admin_user
-                    password = keystone_conf.admin_password
-                    project_name = keystone_conf.admin_tenant_name
-                    self.keystone = keyclient.Client(
-                        auth_url=auth_url,
-                        username=username,
-                        password=password,
-                        tenant_name=project_name)
-                for tenant in self.keystone.tenants.list():
-                    self.tenants[tenant.id] = tenant.name
-                    if tenant.id == tenant_id:
-                        tenant_name = tenant.name
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up tenant name %r"),
-                              tenant_id)
+    def get_switch_and_port_for_host(self, host_id):
+        for switch, connected in self.switch_dict.items():
+            for port, hosts in connected.items():
+                if host_id in hosts:
+                    return switch, port
 
-        apic_tenant_id = tenant_id
-        if tenant_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_tenant_id = tenant_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_tenant_id = tenant_name + "-" + apic_tenant_id
-        return apic_tenant_id
+    def add_hostlink(self,
+                     host, ifname, ifmac,
+                     switch, module, port):
+        # TODO: prog infra/vlan after infra refactor
+        self.db.add_hostlink(host, ifname, ifmac,
+                             switch, module, port)
 
-    def network(self, context, network_id):
-        network_name = None
-        try:
-            network = context._plugin.get_network(
-                context._plugin_context, network_id)
-            network_name = network['name']
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up network name %r"),
-                              network_id)
-
-        apic_network_id = network_id
-        if network_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_network_id = network_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_network_id = \
-                    network_name + "-" + apic_network_id
-        return apic_network_id
-
-    def subnet(self, context, subnet_id):
-        subnet_name = None
-        try:
-            subnet = context._plugin.get_subnet(
-                context._plugin_context, subnet_id)
-            subnet_name = subnet['name']
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up subnet name %r"),
-                              subnet_id)
-
-        apic_subnet_id = subnet_id
-        if subnet_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_subnet_id = subnet_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_subnet_id = \
-                    subnet_name + "-" + apic_subnet_id
-        return apic_subnet_id
-
-    def port(self, context, port_id):
-        port_name = None
-        try:
-            port = context._plugin.get_port(
-                context._plugin_context, port_id)
-            port_name = port['name']
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up port name name %r"),
-                              port_id)
-
-        apic_port_id = port_id
-        if port_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_port_id = port_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_port_id = \
-                    port_name + "-" + apic_port_id
-        return apic_port_id
+    def remove_hostlink(self,
+                        host, ifname, ifmac,
+                        switch, module, port):
+        # TODO: prog infra/vlans after infra refactor
+        self.db.delete_hostlink(host, ifname)

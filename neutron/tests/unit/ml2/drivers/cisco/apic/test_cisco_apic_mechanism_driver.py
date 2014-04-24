@@ -62,16 +62,6 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         self.addCleanup(mock.patch.stopall)
 
     def test_initialize(self):
-        cfg.CONF.set_override('network_vlan_ranges', ['physnet1:100:199'],
-                              'ml2_type_vlan')
-        ns = mocked.APIC_VLAN_NAME
-        mode = mocked.APIC_VLAN_MODE
-        self.mock_response_for_get('fvnsVlanInstP', name=ns, mode=mode)
-        self.mock_response_for_get('physDomP', name=mocked.APIC_DOMAIN)
-        self.mock_response_for_get('infraAttEntityP',
-                                   name=mocked.APIC_ATT_ENT_PROF)
-        self.mock_response_for_get('infraAccPortGrp',
-                                   name=mocked.APIC_ACC_PORT_GRP)
         mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_manager.'
                    'APICManager.ensure_infra_created_on_apic').start()
         self.driver.initialize()

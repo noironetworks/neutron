@@ -23,7 +23,8 @@ from neutron.db import extraroute_db
 from neutron.db import l3_gwmode_db
 from neutron.db import model_base
 from neutron.plugins.common import constants
-from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
+
+from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
 
 
 class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
@@ -34,19 +35,22 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     def __init__(self):
         qdbapi.register_models(base=model_base.BASEV2)
-        self.manager = apic_manager.APICManager()
-        self.name_mapper = apic_manager.APICNameMapper(
-                self.manager,
-                cfg.CONF.ml2_cisco_apic.apic_name_mapping)
- 
-    def _map_names(self, context, tenant_id, network_id, subnet_id):
+        self.manager = \
+            mechanism_apic.APICMechanismDriver.get_apic_manager()
+        self.name_mapper = \
+            mechanism_apic.APICMechanismDriver.get_apic_name_mapper(
+                self.manager)
+
+    def _map_names(self, context,
+                   tenant_id, router_id, net_id, subnet_id):
         context._plugin = self
         context._plugin_context = context   # temporary circular reference
-        tenant_id = self.name_mapper.tenant(context, tenant_id)
-        network_id = self.name_mapper.network(context, network_id)
-        subnet_id = self.name_mapper.subnet(context, subnet_id)
+        atenant_id = tenant_id and self.name_mapper.tenant(context, tenant_id)
+        arouter_id = router_id and self.name_mapper.router(context, router_id)
+        anet_id = net_id and self.name_mapper.network(context, net_id)
+        asubnet_id = subnet_id and self.name_mapper.subnet(context, subnet_id)
         context._plugin_context = None      # break circular reference
-        return  tenant_id, network_id, subnet_id
+        return atenant_id, arouter_id, anet_id, asubnet_id
 
     @staticmethod
     def get_plugin_type():
@@ -57,6 +61,19 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         """returns string description of the plugin."""
         return _("L3 Router Service Plugin for basic L3 using the APIC")
 
+    def delete_router(self, context, router_id):
+        tenant_id = context.tenant_id
+
+        # Map openstack IDs to APIC IDs
+        atenant_id, arouter_id, anetwork_id, asubnet_id = self._map_names(
+            context, tenant_id, router_id, None, None)
+
+        # Delete the router
+        self.manager.delete_router(atenant_id, arouter_id)
+
+        # Delete router in parent
+        super(ApicL3ServicePlugin, self).delete_router(context, router_id)
+
     def add_router_interface(self, context, router_id, interface_info):
         tenant_id = context.tenant_id
         subnet_id = interface_info['subnet_id']
@@ -64,14 +81,14 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         network_id = subnet['network_id']
 
         # Map openstack IDs to APIC IDs
-        tenant_id, network_id, subnet_id = \
-                self._map_names(context, tenant_id, network_id, subnet_id)
+        atenant_id, arouter_id, anetwork_id, asubnet_id = self._map_names(
+            context, tenant_id, router_id, network_id, subnet_id)
 
         # Program APIC
-        self.manager.add_router_interface(tenant_id, router_id,
-                                          network_id, subnet_id)
+        self.manager.add_router_interface(atenant_id, arouter_id,
+                                          anetwork_id, asubnet_id)
 
-        # Create DB port
+        # Create interface in parent
         port = super(ApicL3ServicePlugin, self).add_router_interface(
             context, router_id, interface_info)
 
@@ -85,13 +102,13 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         network_id = subnet['network_id']
 
         # Map openstack IDs to APIC IDs
-        tenant_id, network_id, subnet_id = \
-                self._map_names(context, tenant_id, network_id, subnet_id)
+        atenant_id, arouter_id, anetwork_id, asubnet_id = self._map_names(
+            context, tenant_id, router_id, network_id, subnet_id)
 
         # Program APIC
-        self.manager.remove_router_interface(tenant_id, router_id,
-                                             network_id, subnet_id)
+        self.manager.remove_router_interface(atenant_id, arouter_id,
+                                             anetwork_id, asubnet_id)
 
-        # Delete DB port
+        # Delete interface in parent
         super(ApicL3ServicePlugin, self).remove_router_interface(
             context, router_id, interface_info)
