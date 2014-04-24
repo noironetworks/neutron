@@ -36,8 +36,8 @@ class APICMechanismDriver(api.MechanismDriver):
         self.apic_manager = apic_manager.APICManager()
 
         self.name_mapper = apic_manager.APICNameMapper(
-                self.apic_manager,
-                cfg.CONF.ml2_cisco_apic.apic_name_mapping)
+            self.apic_manager,
+            cfg.CONF.ml2_cisco_apic.apic_name_mapping)
 
         # Create a VMM domain and VLAN namespace
         # Get vlan ns name
@@ -52,7 +52,8 @@ class APICMechanismDriver(api.MechanismDriver):
         vmm_name = cfg.CONF.ml2_cisco_apic.apic_vmm_domain
         phys_name = vmm_name
         # Create Physical domain
-        self.apic_manager.ensure_phys_domain_created_on_apic(phys_name, vlan_ns)
+        self.apic_manager.ensure_phys_domain_created_on_apic(
+            phys_name, vlan_ns)
 
         # Create entity profile
         ent_name = cfg.CONF.ml2_cisco_apic.apic_entity_profile
@@ -82,8 +83,8 @@ class APICMechanismDriver(api.MechanismDriver):
             LOG.debug(_("Port %s is not bound to a segment"), port)
             return
         seg = None
-        if (context.bound_segment.get(api.NETWORK_TYPE) in
-            [constants.TYPE_VLAN]):
+        if (context.bound_segment.get(api.NETWORK_TYPE)
+                in [constants.TYPE_VLAN]):
             seg = context.bound_segment.get(api.SEGMENTATION_ID)
 
         # Check if a compute port
@@ -97,7 +98,7 @@ class APICMechanismDriver(api.MechanismDriver):
         dhcp_host = None
         for dport in ports:
             if (dport.get('device_owner') == 'network:dhcp' and
-                dport.get('network_id') == network_id):
+                    dport.get('network_id') == network_id):
                 dhcp_host = dport.get(portbindings.HOST_ID)
 
         # Create a static path attachment for this host/epg/switchport combo
@@ -105,8 +106,8 @@ class APICMechanismDriver(api.MechanismDriver):
         self.apic_manager.ensure_path_created_for_port(tenant_id, network_id,
                                                        host, seg)
         if dhcp_host is not None and host != dhcp_host:
-            self.apic_manager.ensure_path_created_for_port(tenant_id, network_id,
-                                                           dhcp_host, seg)
+            self.apic_manager.ensure_path_created_for_port(
+                tenant_id, network_id, dhcp_host, seg)
 
     def create_port_postcommit(self, context):
         self._perform_port_operations(context)
@@ -118,7 +119,7 @@ class APICMechanismDriver(api.MechanismDriver):
         tenant_id = context.current['tenant_id']
         network_id = context.current['id']
 
-        # Convert to APIC IDs        
+        # Convert to APIC IDs
         tenant_id = self.name_mapper.tenant(context, tenant_id)
         network_id = self.name_mapper.network(context, network_id)
 
@@ -130,7 +131,7 @@ class APICMechanismDriver(api.MechanismDriver):
         tenant_id = context.current['tenant_id']
         network_id = context.current['id']
 
-        # Convert to APIC IDs        
+        # Convert to APIC IDs
         tenant_id = self.name_mapper.tenant(context, tenant_id)
         network_id = self.name_mapper.network(context, network_id)
 
@@ -145,7 +146,7 @@ class APICMechanismDriver(api.MechanismDriver):
         netmask = str(cidr.prefixlen)
         gateway_ip = gateway_ip + '/' + netmask
 
-        # Convert to APIC IDs        
+        # Convert to APIC IDs
         tenant_id = self.name_mapper.tenant(context, tenant_id)
         network_id = self.name_mapper.network(context, network_id)
 
