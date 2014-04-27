@@ -83,10 +83,12 @@ class APICMechanismDriver(api.MechanismDriver):
             # Not a compute port, return
             return
 
+        # hosts on which this vlan is provisioned
         host = port.get(portbindings.HOST_ID)
-        # Check host that the dhcp agent is running on
-        ports = context._plugin.get_ports(context._plugin_context)
         dhcp_host = None
+
+        # find the host on which the corresponding dhcp server is running
+        ports = context._plugin.get_ports(context._plugin_context)
         for dport in ports:
             if (dport.get('device_owner') == 'network:dhcp' and
                     dport.get('network_id') == network_id):
@@ -94,8 +96,8 @@ class APICMechanismDriver(api.MechanismDriver):
 
         # Create a static path attachment for this host/epg/switchport combo
         self.apic_manager.ensure_tenant_created_on_apic(tenant_id)
-        self.apic_manager.ensure_path_created_for_port(tenant_id, network_id,
-                                                       host, seg)
+        self.apic_manager.ensure_path_created_for_port(
+            tenant_id, network_id, host, seg)
         if dhcp_host is not None and host != dhcp_host:
             self.apic_manager.ensure_path_created_for_port(
                 tenant_id, network_id, dhcp_host, seg)

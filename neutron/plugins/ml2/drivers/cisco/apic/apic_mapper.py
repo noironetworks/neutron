@@ -27,16 +27,26 @@ LOG = log.getLogger(__name__)
 
 NAMING_STRATEGY_UUID = 'use_uuid'
 NAMING_STRATEGY_NAMES = 'use_name'
+NAME_TYPE_TENANT = 'tenant'
+NAME_TYPE_NETWORK = 'network'
+NAME_TYPE_SUBNET = 'subnet'
+NAME_TYPE_PORT = 'port'
+NAME_TYPE_ROUTER = 'router'
 
 
 class APICNameMapper(object):
     def __init__(self, apic_manager, strategy=NAMING_STRATEGY_UUID):
         self.apic_manager = apic_manager
+        self.db = apic_manager.db
         self.strategy = strategy
         self.keystone = None
         self.tenants = {}
 
     def tenant(self, context, tenant_id):
+        saved_name = self.db.get_apic_name(tenant_id, NAME_TYPE_TENANT)
+        if saved_name:
+            return saved_name[0]
+
         tenant_name = None
         try:
             if tenant_id in self.tenants:
@@ -72,9 +82,15 @@ class APICNameMapper(object):
                 apic_tenant_id = tenant_name
             elif self.strategy == NAMING_STRATEGY_UUID:
                 apic_tenant_id = tenant_name + "-" + apic_tenant_id
+
+        self.db.add_apic_name(tenant_id, NAME_TYPE_TENANT, apic_tenant_id)
         return apic_tenant_id
 
     def network(self, context, network_id):
+        saved_name = self.db.get_apic_name(network_id, NAME_TYPE_NETWORK)
+        if saved_name:
+            return saved_name[0]
+
         network_name = None
         try:
             network = context._plugin.get_network(
@@ -93,9 +109,15 @@ class APICNameMapper(object):
             elif self.strategy == NAMING_STRATEGY_UUID:
                 apic_network_id = \
                     network_name + "-" + apic_network_id
+
+        self.db.add_apic_name(network_id, NAME_TYPE_NETWORK, apic_network_id)
         return apic_network_id
 
     def subnet(self, context, subnet_id):
+        saved_name = self.db.get_apic_name(subnet_id, NAME_TYPE_SUBNET)
+        if saved_name:
+            return saved_name[0]
+
         subnet_name = None
         try:
             subnet = context._plugin.get_subnet(
@@ -114,9 +136,15 @@ class APICNameMapper(object):
             elif self.strategy == NAMING_STRATEGY_UUID:
                 apic_subnet_id = \
                     subnet_name + "-" + apic_subnet_id
+
+        self.db.add_apic_name(subnet_id, NAME_TYPE_SUBNET, apic_subnet_id)
         return apic_subnet_id
 
     def port(self, context, port_id):
+        saved_name = self.db.get_apic_name(port_id, NAME_TYPE_PORT)
+        if saved_name:
+            return saved_name[0]
+
         port_name = None
         try:
             port = context._plugin.get_port(
@@ -135,9 +163,15 @@ class APICNameMapper(object):
             elif self.strategy == NAMING_STRATEGY_UUID:
                 apic_port_id = \
                     port_name + "-" + apic_port_id
+
+        self.db.add_apic_name(port_id, NAME_TYPE_PORT, apic_port_id)
         return apic_port_id
 
     def router(self, context, router_id):
+        saved_name = self.db.get_apic_name(router_id, NAME_TYPE_ROUTER)
+        if saved_name:
+            return saved_name[0]
+
         router_name = None
         try:
             router = context._plugin.get_router(
@@ -157,4 +191,6 @@ class APICNameMapper(object):
             elif self.strategy == NAMING_STRATEGY_UUID:
                 apic_router_id = \
                     router_name + "-" + apic_router_id
+
+        self.db.add_apic_name(router_id, NAME_TYPE_ROUTER, apic_router_id)
         return apic_router_id

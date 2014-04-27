@@ -20,6 +20,7 @@ import sqlalchemy as sa
 from neutron.db import api as db_api
 from neutron.db import model_base
 from neutron.db import models_v2
+from neutron.plugins.ml2 import models as models_ml2
 
 from neutron.openstack.common import lockutils
 
@@ -70,9 +71,9 @@ class HostLink(model_base.BASEV2):
     host = sa.Column(sa.String(255), nullable=False, primary_key=True)
     ifname = sa.Column(sa.String(64), nullable=False, primary_key=True)
     ifmac = sa.Column(sa.String(32), nullable=True)
-    switch = sa.Column(sa.Integer(), nullable=False)
-    module = sa.Column(sa.Integer(), nullable=False)
-    port = sa.Column(sa.Integer(), nullable=False)
+    swid = sa.Column(sa.String(32), nullable=False)
+    module = sa.Column(sa.String(32), nullable=False)
+    port = sa.Column(sa.String(32), nullable=False)
 
 
 class ApicName(model_base.BASEV2):
@@ -128,6 +129,9 @@ class ApicDbModel(object):
             node_id=node_id,
             profile_id=profile_id,
             module=module).first()
+
+    def get_nodes_with_port_profile(self):
+        return self.session.query(PortProfile.node_id).distinct()
 
     def add_profile_for_module_and_ports(self, node_id, profile_id,
                                          hpselc_id, module,
@@ -213,9 +217,9 @@ class ApicDbModel(object):
             self.session.delete(profile)
             self._flush()
 
-    def add_hostlink(self, host, ifname, ifmac, switch, module, port):
+    def add_hostlink(self, host, ifname, ifmac, swid, module, port):
         row = HostLink(host=host, ifname=ifname, ifmac=ifmac,
-                       switch=switch, module=module, port=port)
+                       swid=swid, module=module, port=port)
         self.session.merge(row)
         self._flush()
 
@@ -237,6 +241,31 @@ class ApicDbModel(object):
             self.session.delete(profile)
             self._flush()
 
+    def get_switches(self):
+        return self.session.query(HostLink.swid).distinct()
+
+    def get_modules_for_switch(self, swid):
+        return self.session.query(
+            HostLink.module).filter_by(swid=swid).distinct()
+
+    def get_ports_for_switch_module(self, swid, module):
+        return self.session.query(
+            HostLink.port).filter_by(swid=swid, module=module).distinct()
+
+    def get_switch_and_port_for_host(self, host):
+        return self.session.query(
+            HostLink.swid, HostLink.module, HostLink.port).filter_by(
+                host=host).distinct()
+
+    def get_tenant_network_vlan_for_host(self, host):
+        pb = models_ml2.PortBinding
+        po = models_v2.Port
+        ns = models_ml2.NetworkSegment
+        return self.session.query(
+            po.tenant_id, ns.network_id, ns.segmentation_id).filter(
+                po.id == pb.port_id).filter(pb.host == host).filter(
+                    po.network_id == ns.network_id).distinct()
+
     def add_apic_name(self, neutron_id, neutron_type, apic_name):
         row = ApicName(neutron_id=neutron_id,
                        neutron_type=neutron_type,
@@ -248,7 +277,7 @@ class ApicDbModel(object):
         return self.session.query(ApicName).all()
 
     def get_apic_name(self, neutron_id, neutron_type):
-        return self.session.query(ApicName).filter_by(
+        return self.session.query(ApicName.apic_name).filter_by(
             neutron_id=neutron_id, neutron_type=neutron_type).first()
 
     def delete_apic_name(self, neutron_id, neutron_type):
@@ -274,6 +303,16 @@ class ApicDbModel(object):
         if profile:
             self.session.delete(profile)
             self._flush()
+
+    @lockutils.synchronized('apic_manager_flush')
+    def clean(self):
+        self.session.query(NetworkEPG).delete()
+        self.session.query(PortProfile).delete()
+        self.session.query(TenantContract).delete()
+        self.session.query(HostLink).delete()
+        self.session.query(ApicName).delete()
+        self.session.query(ApicKey).delete()
+        self.session.flush()
 
     @lockutils.synchronized('apic_manager_flush')
     def _flush(self):

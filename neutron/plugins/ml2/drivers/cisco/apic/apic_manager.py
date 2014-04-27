@@ -24,6 +24,7 @@ from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.ml2.drivers.cisco.apic import apic_client
 from neutron.plugins.ml2.drivers.cisco.apic import apic_model
+from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
 
 
@@ -34,19 +35,12 @@ CONTEXT_ENFORCED = '1'
 CONTEXT_UNENFORCED = '2'
 CONTEXT_DEFAULT = 'default'
 DN_KEY = 'dn'
-PORT_DN_PATH = 'topology/pod-1/paths-%s/pathep-[eth%s]'
+PORT_DN_PATH = 'topology/pod-1/paths-%s/pathep-[eth%s/%s]'
 SCOPE_GLOBAL = 'global'
 SCOPE_TENANT = 'tenant'
 TENANT_COMMON = 'common'
 NAMING_STRATEGY_UUID = 'use_uuid'
 NAMING_STRATEGY_NAMES = 'use_name'
-
-
-def group_by_ranges(i):
-    """Group a list of numbers into tuples representing contiguous ranges."""
-    for a, b in itertools.groupby(enumerate(sorted(i)), lambda (x, y): y - x):
-        b = list(b)
-        yield b[0][1], b[-1][1]
 
 
 class APICManager(object):
@@ -107,124 +101,99 @@ class APICManager(object):
         func_name = self.apic_config.apic_function_profile
         self.ensure_function_profile_created_on_apic(func_name)
 
-        # create infrastructure elements for all switches
+        # first make sure that all existing switches in DB are in apic
+        for switch in self.db.get_switches():
+            self.ensure_infra_created_for_switch(switch[0])
+
+        # now create add any new switches in config to apic and DB
         for switch in self.switch_dict:
-            self.ensure_infra_created_for_switch(switch)
+            for module_port in self.switch_dict[switch]:
+                module, port = module_port.split('/')
+                hosts = self.switch_dict[switch][module_port]
+                for host in hosts:
+                    self.add_hostlink(
+                        host, 'static', None, switch, module, port)
 
-    def ensure_infra_created_for_switch(self, switch):
-            # Create a node and profile for this switch
-            self.ensure_node_profile_created_for_switch(switch)
-            ppname = self.check_infra_port_profiles(switch)
-            modules = self.gather_infra_module_ports(switch)
-
-            # Setup each module and port range
-            for module in modules:
-                profile = self.db.get_profile_for_module(
-                    switch, ppname, module)
-                if not profile:
-                    hname = uuid.uuid4()
-                    try:
-                        self.apic.infraHPortS.create(ppname, hname, 'range')
-                        fpdn = self.function_profile[DN_KEY]
-                        self.apic.infraRsAccBaseGrp.create(
-                            ppname, hname, 'range', tDn=fpdn)
-                        modules[module].sort()
-                    except (cexc.ApicResponseNotOk, KeyError):
-                        with excutils.save_and_reraise_exception():
-                            self.apic.infraHPortS.delete(
-                                ppname, hname, 'range')
-                else:
-                    hname = profile.hpselc_id
-
-                # Add this module and ports to the profile
-                ranges = group_by_ranges(modules[module])
-                for prange in ranges:
-                    if not self.db.get_profile_for_module_and_ports(
-                            switch, ppname, module, prange[0], prange[-1]):
-                        # Create port block for this port range
-                        pbname = uuid.uuid4()
-                        self.apic.infraPortBlk.create(ppname, hname, 'range',
-                                                      pbname, fromCard=module,
-                                                      toCard=module,
-                                                      fromPort=str(prange[0]),
-                                                      toPort=str(prange[-1]))
-                        # Add DB row
-                        self.db.add_profile_for_module_and_ports(
-                            switch, ppname, hname, module,
-                            prange[0], prange[-1])
-
-    def check_infra_port_profiles(self, switch):
-        """Check and create infra port profiles for a node."""
-        sprofile = self.db.get_port_profile_for_node(switch)
-        ppname = None
-        if not sprofile:
-            # Generate uuid for port profile name
-            ppname = uuid.uuid4()
+    def ensure_vlan_ns_created_on_apic(self, name, vlan_min, vlan_max):
+        """Creates a static VLAN namespace with the given vlan range."""
+        ns_args = name, 'static'
+        if self.clear_node_profiles:
+            self.apic.fvnsVlanInstP.delete(name, 'dynamic')
+            self.apic.fvnsVlanInstP.delete(*ns_args)
+        self.vlan_ns = self.apic.fvnsVlanInstP.get(*ns_args)
+        if not self.vlan_ns:
             try:
-                # Create port profile for this switch
-                pprofile = self.ensure_port_profile_created_on_apic(ppname)
-                # Add port profile to node profile
-                ppdn = pprofile[DN_KEY]
-                self.apic.infraRsAccPortP.create(switch, ppdn)
+                self.apic.fvnsVlanInstP.create(*ns_args)
+                vlan_min = 'vlan-' + vlan_min
+                vlan_max = 'vlan-' + vlan_max
+                ns_blk_args = name, 'static', vlan_min, vlan_max
+                vlan_encap = self.apic.fvnsEncapBlk__vlan.get(*ns_blk_args)
+                if not vlan_encap:
+                    ns_kw_args = {
+                        'name': 'encap',
+                        'from': vlan_min,
+                        'to': vlan_max
+                    }
+                    self.apic.fvnsEncapBlk__vlan.create(*ns_blk_args,
+                                                        **ns_kw_args)
+                self.vlan_ns = self.apic.fvnsVlanInstP.get(*ns_args)
+                return self.vlan_ns
             except (cexc.ApicResponseNotOk, KeyError):
                 with excutils.save_and_reraise_exception():
-                    # Delete port profile
-                    self.apic.infraAccPortP.delete(ppname)
-        else:
-            ppname = sprofile.profile_id
+                    # Delete the vlan namespace
+                    self.apic.fvnsVlanInstP.delete(*ns_args)
 
-        return ppname
+    def ensure_phys_domain_created_on_apic(self, phys_name,
+                                           vlan_ns=None):
+        """Create Virtual Machine Manager domain.
 
-    def gather_infra_module_ports(self, switch):
-        """Build modules and ports per module dictionary."""
-        ports = self.switch_dict[switch]
-        # Gather common modules
-        modules = {}
-        for port in ports:
-            module, sw_port = port.split('/')
-            if module not in modules:
-                modules[module] = []
-            modules[module].append(int(sw_port))
+        Creates the VMM domain on the APIC and adds a VLAN or VXLAN
+        namespace to that VMM domain.
+        TODO (asomya): Add VXLAN support
+        """
+        if self.clear_node_profiles:
+            self.apic.physDomP.delete(phys_name)
+        self.phys_domain = self.apic.physDomP.get(phys_name)
+        if not self.phys_domain:
+            try:
+                self.apic.physDomP.create(phys_name)
+                if vlan_ns:
+                    vlan_ns_dn = vlan_ns[DN_KEY]
+                    self.apic.infraRsVlanNs.create(phys_name,
+                                                   tDn=vlan_ns_dn)
+                self.phys_domain = self.apic.physDomP.get(phys_name)
+            except (cexc.ApicResponseNotOk, KeyError):
+                with excutils.save_and_reraise_exception():
+                    # Delete the physical domain
+                    self.apic.physDomP.delete(phys_name)
 
-        return modules
+    def ensure_vmm_domain_created_on_apic(self, vmm_name,
+                                          vlan_ns=None, vxlan_ns=None):
+        """Create Virtual Machine Manager domain.
 
-    def ensure_context_unenforced(self, tenant_id, ctx_id):
-        """Set the specified tenant's context to unenforced."""
-        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
-        if not ctx:
-            self.apic.fvCtx.create(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
-        elif ctx['pcEnfPref'] != CONTEXT_UNENFORCED:
-            self.apic.fvCtx.update(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
-
-    def ensure_context_enforced(self, tenant_id, ctx_id):
-        """Set the specified tenant's context to enforced."""
-        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
-        if not ctx:
-            self.apic.fvCtx.create(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
-        elif ctx['pcEnfPref'] != CONTEXT_ENFORCED:
-            self.apic.fvCtx.update(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
-
-    def ensure_context_any_contract(self, tenant_id, ctx_id, contract_id):
-        """Set the specified tenant's context to enforced."""
-        vzany = self.apic.vzAny.get(tenant_id, ctx_id)
-        if not vzany:
-            vzany = self.apic.vzAny.create(tenant_id, ctx_id)
-
-        provider = self.apic.vzRsAnyToProv.get(
-            tenant_id, ctx_id, contract_id)
-        if not provider:
-            self.apic.vzRsAnyToProv.create(
-                tenant_id, ctx_id, contract_id)
-
-        consumer = self.apic.vzRsAnyToCons.get(
-            tenant_id, ctx_id, contract_id)
-        if not consumer:
-            self.apic.vzRsAnyToCons.create(
-                tenant_id, ctx_id, contract_id)
+        Creates the VMM domain on the APIC and adds a VLAN or VXLAN
+        namespace to that VMM domain.
+        TODO (asomya): Add VXLAN support
+        """
+        provider = 'VMware'
+        if self.clear_node_profiles:
+            self.apic.vmmDomP.delete(provider, vmm_name)
+        self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
+        if not self.vmm_domain:
+            try:
+                self.apic.vmmDomP.create(provider, vmm_name)
+                if vlan_ns:
+                    vlan_ns_dn = vlan_ns[DN_KEY]
+                    # Note(mandeep):
+                    # If we change back to vmm domain, need to revert to
+                    # self.apic.infraRsVlanNs.create(
+                    #     provider, vmm_name, tDn=vlan_ns_dn)
+                    self.apic.infraRsVlanNs.create(vmm_name, tDn=vlan_ns_dn)
+                self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
+            except (cexc.ApicResponseNotOk, KeyError):
+                with excutils.save_and_reraise_exception():
+                    # Delete the VMM domain
+                    self.apic.vmmDomP.delete(provider, vmm_name)
 
     def ensure_entity_profile_created_on_apic(self, name):
         """Create the infrastructure entity profile."""
@@ -260,6 +229,54 @@ class APICManager(object):
                     # Delete the created function profile
                     self.apic.infraAccPortGrp.delete(name)
 
+    def ensure_infra_created_for_switch(self, switch):
+            # Create a node and profile for this switch
+            if not self.function_profile:
+                self.function_profile = self.apic.infraAccPortGrp.get(
+                    self.apic_config.apic_function_profile)
+            self.ensure_node_profile_created_for_switch(switch)
+            ppname = self.ensure_port_profile_created_for_switch(switch)
+
+            # Setup each module and port range
+            for module in self.db.get_modules_for_switch(switch):
+                module = module[0]
+                profile = self.db.get_profile_for_module(
+                    switch, ppname, module)
+                if not profile:
+                    hname = uuid.uuid4()
+                    try:
+                        self.apic.infraHPortS.create(ppname, hname, 'range')
+                        fpdn = self.function_profile[DN_KEY]
+                        self.apic.infraRsAccBaseGrp.create(
+                            ppname, hname, 'range', tDn=fpdn)
+                    except (cexc.ApicResponseNotOk, KeyError):
+                        with excutils.save_and_reraise_exception():
+                            self.apic.infraHPortS.delete(
+                                ppname, hname, 'range')
+                else:
+                    hname = profile.hpselc_id
+
+                # Add this module and ports to the profile
+                ports = [p[0] for p in
+                         self.db.get_ports_for_switch_module(switch, module)]
+                ports.sort()
+                #ranges = APICManager.group_by_ranges(ports)
+                ranges = zip(ports, ports)
+                for prange in ranges:
+                    if not self.db.get_profile_for_module_and_ports(
+                            switch, ppname, module, prange[0], prange[-1]):
+                        # Create port block for this port range
+                        pbname = uuid.uuid4()
+                        self.apic.infraPortBlk.create(ppname, hname, 'range',
+                                                      pbname, fromCard=module,
+                                                      toCard=module,
+                                                      fromPort=str(prange[0]),
+                                                      toPort=str(prange[-1]))
+                        # Add DB row
+                        self.db.add_profile_for_module_and_ports(
+                            switch, ppname, hname, module,
+                            prange[0], prange[-1])
+
     def ensure_node_profile_created_for_switch(self, switch_id):
         """Creates a switch node profile.
 
@@ -292,95 +309,45 @@ class APICManager(object):
             'object': sobj
         }
 
-    def ensure_port_profile_created_on_apic(self, name):
+    def ensure_port_profile_created_for_switch(self, switch):
+        """Check and create infra port profiles for a node."""
+        sprofile = self.db.get_port_profile_for_node(switch)
+        ppname = None
+        if not sprofile:
+            # Generate uuid for port profile name
+            ppname = uuid.uuid4()
+            try:
+                # Create port profile for this switch
+                pprofile = self.ensure_port_profile_on_apic(ppname)
+                # Add port profile to node profile
+                ppdn = pprofile[DN_KEY]
+                self.apic.infraRsAccPortP.create(switch, ppdn)
+            except (cexc.ApicResponseNotOk, KeyError):
+                with excutils.save_and_reraise_exception():
+                    # Delete port profile
+                    self.apic.infraAccPortP.delete(ppname)
+        else:
+            ppname = sprofile.profile_id
+
+        return ppname
+
+    def ensure_port_profile_on_apic(self, name):
         """Create a port profile."""
         try:
-            self.apic.infraAccPortP.create(name)
+            if not self.apic.infraAccPortP.get(name):
+                self.apic.infraAccPortP.create(name)
             return self.apic.infraAccPortP.get(name)
         except (cexc.ApicResponseNotOk, KeyError):
             with excutils.save_and_reraise_exception():
                 self.apic.infraAccPortP.delete(name)
 
-    def ensure_vmm_domain_created_on_apic(self, vmm_name,
-                                          vlan_ns=None, vxlan_ns=None):
-        """Create Virtual Machine Manager domain.
-
-        Creates the VMM domain on the APIC and adds a VLAN or VXLAN
-        namespace to that VMM domain.
-        TODO (asomya): Add VXLAN support
-        """
-        provider = 'VMware'
-        if self.clear_node_profiles:
-            self.apic.vmmDomP.delete(provider, vmm_name)
-        self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
-        if not self.vmm_domain:
-            try:
-                self.apic.vmmDomP.create(provider, vmm_name)
-                if vlan_ns:
-                    vlan_ns_dn = vlan_ns[DN_KEY]
-                    # TODO(mandeep):
-                    # If we change back to vmm domain, need to revert
-                    # self.apic.infraRsVlanNs.create(provider, vmm_name,
-                    #                               tDn=vlan_ns_dn)
-                    self.apic.infraRsVlanNs.create(vmm_name, tDn=vlan_ns_dn)
-                self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the VMM domain
-                    self.apic.vmmDomP.delete(provider, vmm_name)
-
-    def ensure_phys_domain_created_on_apic(self, phys_name,
-                                           vlan_ns=None):
-        """Create Virtual Machine Manager domain.
-
-        Creates the VMM domain on the APIC and adds a VLAN or VXLAN
-        namespace to that VMM domain.
-        TODO (asomya): Add VXLAN support
-        """
-        if self.clear_node_profiles:
-            self.apic.physDomP.delete(phys_name)
-        self.phys_domain = self.apic.physDomP.get(phys_name)
-        if not self.phys_domain:
-            try:
-                self.apic.physDomP.create(phys_name)
-                if vlan_ns:
-                    vlan_ns_dn = vlan_ns[DN_KEY]
-                    self.apic.infraRsVlanNs.create(phys_name,
-                                                   tDn=vlan_ns_dn)
-                self.phys_domain = self.apic.physDomP.get(phys_name)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the physical domain
-                    self.apic.physDomP.delete(phys_name)
-
-    def ensure_vlan_ns_created_on_apic(self, name, vlan_min, vlan_max):
-        """Creates a static VLAN namespace with the given vlan range."""
-        ns_args = name, 'static'
-        if self.clear_node_profiles:
-            self.apic.fvnsVlanInstP.delete(name, 'dynamic')
-            self.apic.fvnsVlanInstP.delete(*ns_args)
-        self.vlan_ns = self.apic.fvnsVlanInstP.get(*ns_args)
-        if not self.vlan_ns:
-            try:
-                self.apic.fvnsVlanInstP.create(*ns_args)
-                vlan_min = 'vlan-' + vlan_min
-                vlan_max = 'vlan-' + vlan_max
-                ns_blk_args = name, 'static', vlan_min, vlan_max
-                vlan_encap = self.apic.fvnsEncapBlk__vlan.get(*ns_blk_args)
-                if not vlan_encap:
-                    ns_kw_args = {
-                        'name': 'encap',
-                        'from': vlan_min,
-                        'to': vlan_max
-                    }
-                    self.apic.fvnsEncapBlk__vlan.create(*ns_blk_args,
-                                                        **ns_kw_args)
-                self.vlan_ns = self.apic.fvnsVlanInstP.get(*ns_args)
-                return self.vlan_ns
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the vlan namespace
-                    self.apic.fvnsVlanInstP.delete(*ns_args)
+    @staticmethod
+    def group_by_ranges(i):
+        """Group a list of numbers into tuples of contiguous ranges."""
+        for a, b in itertools.groupby(enumerate(sorted(i)),
+                                      lambda (x, y): y - x):
+            b = list(b)
+            yield b[0][1], b[-1][1]
 
     def ensure_tenant_created_on_apic(self, tenant_id):
         """Make sure a tenant exists on the APIC."""
@@ -565,6 +532,44 @@ class APICManager(object):
 
         return contract
 
+    def ensure_context_unenforced(self, tenant_id, ctx_id):
+        """Set the specified tenant's context to unenforced."""
+        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
+        if not ctx:
+            self.apic.fvCtx.create(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
+        elif ctx['pcEnfPref'] != CONTEXT_UNENFORCED:
+            self.apic.fvCtx.update(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
+
+    def ensure_context_enforced(self, tenant_id, ctx_id):
+        """Set the specified tenant's context to enforced."""
+        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
+        if not ctx:
+            self.apic.fvCtx.create(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
+        elif ctx['pcEnfPref'] != CONTEXT_ENFORCED:
+            self.apic.fvCtx.update(
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
+
+    def ensure_context_any_contract(self, tenant_id, ctx_id, contract_id):
+        """Set the specified tenant's context to enforced."""
+        vzany = self.apic.vzAny.get(tenant_id, ctx_id)
+        if not vzany:
+            vzany = self.apic.vzAny.create(tenant_id, ctx_id)
+
+        provider = self.apic.vzRsAnyToProv.get(
+            tenant_id, ctx_id, contract_id)
+        if not provider:
+            self.apic.vzRsAnyToProv.create(
+                tenant_id, ctx_id, contract_id)
+
+        consumer = self.apic.vzRsAnyToCons.get(
+            tenant_id, ctx_id, contract_id)
+        if not consumer:
+            self.apic.vzRsAnyToCons.create(
+                tenant_id, ctx_id, contract_id)
+
     def make_tenant_contract_global(self, tenant_id):
         """Mark the tenant contract's scope to global."""
         contract = self.db.get_contract_for_tenant(tenant_id)
@@ -580,25 +585,40 @@ class APICManager(object):
     def ensure_path_created_for_port(self, tenant_id, network_id,
                                      host_id, encap):
         """Create path attribute for an End Point Group."""
-        encap = 'vlan-' + str(encap)
         epg = self.ensure_epg_created_for_network(tenant_id, network_id)
         eid = epg.epg_id
 
         # Get attached switch and port for this host
-        host_config = self.get_switch_and_port_for_host(host_id)
+        host_config = self.db.get_switch_and_port_for_host(host_id)
         if not host_config:
             raise cexc.ApicHostNotConfigured(host=host_id)
-        switch, port = host_config
-        pdn = PORT_DN_PATH % (switch, port)
 
-        # Check if exists
+        for switch, module, port in host_config:
+            self.ensure_path_binding_for_port(
+                tenant_id, eid, encap, switch, module, port)
+
+    def ensure_path_binding_for_port(self, tenant_id, epg_id, encap,
+                                     switch, module, port):
+        # Verify that it exists, or create it if required
+        encap = 'vlan-' + str(encap)
+        pdn = PORT_DN_PATH % (switch, module, port)
         patt = self.apic.fvRsPathAtt.get(
-            tenant_id, self.app_profile_name, eid, pdn)
+            tenant_id, self.app_profile_name, epg_id, pdn)
         if not patt:
             self.apic.fvRsPathAtt.create(
-                tenant_id, self.app_profile_name, eid, pdn,
+                tenant_id, self.app_profile_name, epg_id, pdn,
                 encap=encap, mode="regular",
                 instrImedcy="immediate")
+
+    def ensure_vlans_created_for_host(self, host):
+        segments = self.db.get_tenant_network_vlan_for_host(host)
+        for tenant, network, encap in segments:
+            tenant_id = self.db.get_apic_name(
+                tenant, apic_mapper.NAME_TYPE_TENANT)[0]
+            network_id = self.db.get_apic_name(
+                network, apic_mapper.NAME_TYPE_NETWORK)[0]
+            self.ensure_path_created_for_port(
+                tenant_id, network_id, host, encap)
 
     def add_router_interface(self, tenant_id, router_id,
                              network_id, subnet_id):
@@ -639,21 +659,45 @@ class APICManager(object):
     def delete_router(self, tenant_id, router_id):
         self.apic.fvCtx.delete(tenant_id, router_id)
 
-    def get_switch_and_port_for_host(self, host_id):
-        for switch, connected in self.switch_dict.items():
-            for port, hosts in connected.items():
-                if host_id in hosts:
-                    return switch, port
-
     def add_hostlink(self,
                      host, ifname, ifmac,
                      switch, module, port):
-        # TODO: prog infra/vlan after infra refactor
         self.db.add_hostlink(host, ifname, ifmac,
                              switch, module, port)
+        self.ensure_infra_created_for_switch(switch)
+        self.ensure_vlans_created_for_host(host)
 
     def remove_hostlink(self,
                         host, ifname, ifmac,
                         switch, module, port):
-        # TODO: prog infra/vlans after infra refactor
         self.db.delete_hostlink(host, ifname)
+        # TODO(mandeep): handle delete
+
+    def clean(self):
+        """Clean up apic profiles and DB information (useful for testing)"""
+        # clean infra profiles
+        vlan_ns_name = self.apic_config.apic_vlan_ns_name
+        self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'dynamic')
+        self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'static')
+
+        # delete physdom profiles (and later vmmdom as well)
+        phys_name = self.apic_config.apic_vmm_domain
+        self.apic.physDomP.delete(phys_name)
+        # vmm_name = phys_name
+        # provider = 'VMware'
+        # self.apic.vmmDomP.delete(provider, vmm_name)
+
+        # delete entity profile
+        ent_name = self.apic_config.apic_entity_profile
+        self.apic.infraAttEntityP.delete(ent_name)
+
+        # delete function profile
+        func_name = self.apic_config.apic_function_profile
+        self.apic.infraAccPortGrp.delete(func_name)
+
+        # delete switch profile for switches in DB
+        for switch_id in self.db.get_nodes_with_port_profile():
+            self.apic.infraNodeP.delete(switch_id)
+
+        # clean db
+        self.db.clean()

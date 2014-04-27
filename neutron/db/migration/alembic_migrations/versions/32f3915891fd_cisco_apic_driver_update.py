@@ -44,9 +44,9 @@ def upgrade(active_plugins=None, options=None):
         sa.Column('host', sa.String(length=255), nullable=False),
         sa.Column('ifname', sa.String(length=64), nullable=False),
         sa.Column('ifmac', sa.String(length=32), nullable=True),
-        sa.Column('switch', sa.Integer(), nullable=False),
-        sa.Column('module', sa.Integer(), nullable=False),
-        sa.Column('port', sa.Integer(), nullable=False),
+        sa.Column('swid', sa.String(length=32), nullable=False),
+        sa.Column('module', sa.String(length=32), nullable=False),
+        sa.Column('port', sa.String(length=32), nullable=False),
         sa.PrimaryKeyConstraint('host', 'ifname'))
 
     op.create_table(

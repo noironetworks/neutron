@@ -63,7 +63,8 @@ class TestCiscoApicManager(base.BaseTestCase,
     def test_to_range(self):
         port_list = [4, 2, 3, 1, 7, 8, 10, 20, 6, 22, 21]
         expected_ranges = [(1, 4), (6, 8), (10, 10), (20, 22)]
-        port_ranges = [r for r in apic_manager.group_by_ranges(port_list)]
+        port_ranges = [r for r in
+                       apic_manager.APICManager.group_by_ranges(port_list)]
         self.assertEqual(port_ranges, expected_ranges)
 
     def test_get_profiles(self):
@@ -91,9 +92,10 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def test_ensure_port_profile_created(self):
         port_name = mocked.APIC_PORT
+        self.mock_response_for_get('infraAccPortP', name=port_name)
         self.mock_responses_for_create('infraAccPortP')
         self.mock_response_for_get('infraAccPortP', name=port_name)
-        port = self.mgr.ensure_port_profile_created_on_apic(port_name)
+        port = self.mgr.ensure_port_profile_on_apic(port_name)
         self.assert_responses_drained()
         self.assertEqual(port['name'], port_name)
 
@@ -102,7 +104,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.mock_error_post_response(wexc.HTTPBadRequest)
         self.mock_response_for_post('infraAccPortP')
         self.assertRaises(cexc.ApicResponseNotOk,
-                          self.mgr.ensure_port_profile_created_on_apic,
+                          self.mgr.ensure_port_profile_on_apic,
                           port_name)
         self.assert_responses_drained()
 
@@ -200,6 +202,7 @@ class TestCiscoApicManager(base.BaseTestCase,
     def _infra_created_setup(self):
         ns = mocked.APIC_VLAN_NAME
         mode = mocked.APIC_VLAN_MODE
+        self.mock_db_query_filterby_first_return(None)
         self.mock_response_for_get('fvnsVlanInstP', name=ns, mode=mode)
         self.mock_response_for_get('physDomP', name=mocked.APIC_DOMAIN)
         self.mock_response_for_get('infraAttEntityP',
@@ -220,7 +223,7 @@ class TestCiscoApicManager(base.BaseTestCase,
             am + '.ensure_node_profile_created_for_switch').start()
         self.mock_db_query_filterby_first_return(None)
         pp_create_for_switch = mock.patch(
-            am + '.ensure_port_profile_created_on_apic').start()
+            am + '.ensure_port_profile_on_apic').start()
         pp_create_for_switch.return_value = {'dn': 'port_profile_dn'}
         return np_create_for_switch, pp_create_for_switch
 

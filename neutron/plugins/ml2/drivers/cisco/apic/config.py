@@ -93,11 +93,12 @@ def switch_dictionary():
             if parsed_item.startswith('apic_switch'):
                 switch, switch_id = parsed_item.split(':')
                 if switch.lower() == 'apic_switch':
-                    switch_dict[switch_id] = {}
+                    switch_dict[switch_id] = switch_dict.get(switch_id, {})
                     port_cfg = parsed_file[parsed_item].items()
                     for host_list, port in port_cfg:
                         hosts = host_list.split(',')
                         port = port[0]
-                        switch_dict[switch_id][port] = hosts
+                        switch_dict[switch_id][port] = \
+                            switch_dict[switch_id].get(port, []) + hosts
 
     return switch_dict

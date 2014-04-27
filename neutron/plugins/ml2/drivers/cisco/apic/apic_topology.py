@@ -30,10 +30,12 @@ from neutron.common import rpc as neutron_rpc
 from neutron.common import utils as neutron_utils
 from neutron.db import agents_db
 from neutron.openstack.common import log as logging
+from neutron.openstack.common import lockutils
 from neutron.openstack.common import periodic_task
 from neutron.openstack.common import service as svc
 from neutron.openstack.common import rpc
 
+from neutron.plugins.ml2.drivers import type_vlan
 from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
 
@@ -110,6 +112,7 @@ class ApicTopologyService(manager.Manager):
         except Exception:
             LOG.exception(_("APIC service agent: failed in reporting state"))
 
+    @lockutils.synchronized('apic_service')
     def update_link(self, context,
                     host, interface, mac,
                     switch, module, port):
