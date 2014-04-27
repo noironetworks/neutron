@@ -313,18 +313,21 @@ class TestCiscoApicManager(base.BaseTestCase,
     def test_ensure_context_unenforced_new_ctx(self):
         self.mock_response_for_get('fvCtx')
         self.mock_responses_for_create('fvCtx')
-        self.mgr.ensure_context_unenforced()
+        self.mgr.ensure_context_unenforced(
+            mocked.APIC_TENANT, mocked.APIC_L3CTX)
         self.assert_responses_drained()
 
     def test_ensure_context_unenforced_pref1(self):
         self.mock_response_for_get('fvCtx', pcEnfPref='1')
         self.mock_response_for_post('fvCtx')
-        self.mgr.ensure_context_unenforced()
+        self.mgr.ensure_context_unenforced(
+            mocked.APIC_TENANT, mocked.APIC_L3CTX)
         self.assert_responses_drained()
 
     def test_ensure_context_unenforced_pref2(self):
         self.mock_response_for_get('fvCtx', pcEnfPref='2')
-        self.mgr.ensure_context_unenforced()
+        self.mgr.ensure_context_unenforced(
+            mocked.APIC_TENANT, mocked.APIC_L3CTX)
         self.assert_responses_drained()
 
     def _mock_vmm_dom_prereq(self, dom):
@@ -632,7 +635,6 @@ class TestCiscoApicManager(base.BaseTestCase,
         epg_obj.provider = False
         self.mock_db_query_filterby_first_return(epg_obj)
         self.mock_responses_for_create('fvRsProv')
-        self.mock_response_for_post('vzBrCP')
         self.mgr.set_contract_for_epg(tenant, epg, contract, provider=True)
         self.assert_responses_drained()
         self.assertTrue(self.mocked_session.merge.called)
@@ -644,7 +646,6 @@ class TestCiscoApicManager(base.BaseTestCase,
         epg = mocked.APIC_EPG
         contract = mocked.APIC_CONTRACT
         self.mock_error_post_response(wexc.HTTPBadRequest)
-        self.mock_response_for_post('vzBrCP')
         self.mock_response_for_post('fvRsProv')
         self.assertRaises(cexc.ApicResponseNotOk,
                           self.mgr.set_contract_for_epg,
@@ -663,28 +664,20 @@ class TestCiscoApicManager(base.BaseTestCase,
         tenant = mocked.APIC_TENANT
         epg = mocked.APIC_EPG
         contract = mocked.APIC_CONTRACT
-        epg_obj = mock.Mock()
-        epg_obj.epg_id = epg + '-other'
-        epg_obj.provider = False
-        self.mock_db_query_filterby_first_return(epg_obj)
         self.mock_response_for_post('fvRsProv')
-        self.mock_response_for_post('fvRsCons')
-        self.mock_responses_for_create('fvRsProv')
-        self.mock_response_for_post('vzBrCP')
         self.mgr.delete_contract_for_epg(tenant, epg, contract, provider=True)
         self.assert_responses_drained()
         self.assertTrue(self.mocked_session.merge.called)
         self.assertTrue(self.mocked_session.flush.called)
-        self.assertTrue(epg_obj.provider)
 
-    def test_create_tenant_contract_existing(self):
+    def test_get_router_contract_existing(self):
         tenant = mocked.APIC_TENANT
         contract = mocked.APIC_CONTRACT
         self.mock_db_query_filterby_first_return(contract)
-        new_contract = self.mgr.create_tenant_contract(tenant)
+        new_contract = self.mgr.get_router_contract(tenant)
         self.assertEqual(new_contract, contract)
 
-    def test_create_tenant_contract_new(self):
+    def test_get_router_contract_new(self):
         tenant = mocked.APIC_TENANT
         contract = mocked.APIC_CONTRACT
         dn = self.mgr.apic.vzBrCP.mo.dn(tenant, contract)
@@ -700,17 +693,17 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.mock_responses_for_create('vzRsFiltAtt__Out')
         self.mock_responses_for_create('vzCPIf')
         self.mock_responses_for_create('vzRsIf')
-        new_contract = self.mgr.create_tenant_contract(tenant)
+        new_contract = self.mgr.get_router_contract(tenant)
         self.assert_responses_drained()
         self.assertTrue(self.mocked_session.add.called)
         self.assertTrue(self.mocked_session.flush.called)
         self.assertEqual(new_contract['tenant_id'], tenant)
 
-    def test_create_tenant_contract_exc(self):
+    def test_get_router_contract_exc(self):
         tenant = mocked.APIC_TENANT
         self.mock_db_query_filterby_first_return(None)
         self.mock_error_post_response(wexc.HTTPBadRequest)
         self.mock_response_for_post('vzBrCP')
         self.assertRaises(cexc.ApicResponseNotOk,
-                          self.mgr.create_tenant_contract, tenant)
+                          self.mgr.get_router_contract, tenant)
         self.assert_responses_drained()
