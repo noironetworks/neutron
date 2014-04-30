@@ -18,6 +18,10 @@
 from oslo.config import cfg
 
 
+DEFAULT_ROOT_HELPER = \
+    'sudo /usr/local/bin/neutron-rootwrap /etc/neutron/rootwrap.conf'
+
+
 apic_opts = [
     cfg.StrOpt('apic_host',
                help=_("Host name or IP Address of the APIC controller")),
@@ -75,7 +79,7 @@ apic_opts = [
                 help=_("Clear the apic specific db tables at startup "
                        "(for testing)")),
     cfg.StrOpt('root_helper',
-               default='sudo /usr/local/bin/neutron-rootwrap /etc/neutron/rootwrap.conf',
+               default=DEFAULT_ROOT_HELPER,
                help=_("Setup root helper as rootwrap or sudo")),
 ]
 
