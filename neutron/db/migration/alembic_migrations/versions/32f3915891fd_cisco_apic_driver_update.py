@@ -62,6 +62,15 @@ def upgrade(active_plugins=None, options=None):
         sa.Column('value', sa.String(length=255), nullable=False),
         sa.PrimaryKeyConstraint('key'))
 
+    op.drop_constraint(
+            'pk_cisco_ml2_apic_port_profiles',
+            'cisco_ml2_apic_port_profiles',
+            type_='primary')
+
+    op.create_primary_key(
+            'pk_cisco_ml2_apic_port_profiles',
+            'cisco_ml2_apic_port_profiles',
+            ['node_id', 'from_port', 'to_port'])
 
 def downgrade(active_plugins=None, options=None):
     if not migration.should_run(active_plugins, migration_for_plugins):
@@ -70,3 +79,13 @@ def downgrade(active_plugins=None, options=None):
     op.drop_table('cisco_ml2_apic_config')
     op.drop_table('cisco_ml2_apic_names')
     op.drop_table('cisco_ml2_apic_host_links')
+
+    op.drop_constraint(
+            'pk_cisco_ml2_apic_port_profiles',
+            'cisco_ml2_apic_port_profiles',
+            type_='primary')
+
+    op.create_primary_key(
+            'pk_cisco_ml2_apic_port_profiles',
+            'cisco_ml2_apic_port_profiles',
+            ['node_id'])
