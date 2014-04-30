@@ -74,6 +74,9 @@ apic_opts = [
                 default=False,
                 help=_("Clear the apic specific db tables at startup "
                        "(for testing)")),
+    cfg.StrOpt('root_helper',
+               default='sudo /usr/local/bin/neutron-rootwrap /etc/neutron/rootwrap.conf',
+               help=_("Setup root helper as rootwrap or sudo")),
 ]
 
 

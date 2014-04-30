@@ -180,6 +180,7 @@ class ApicTopologyAgent(manager.Manager):
         self.lldpcmd = None
         self.peers = {}
         self.port_desc_re = map(re.compile, ACI_PORT_DESCR_FORMATS)
+        self.root_helper = self.conf.root_helper
         self.service_agent = ApicTopologyServiceNotifierApi()
         self.state = None
         self.state_agent = None
@@ -231,7 +232,7 @@ class ApicTopologyAgent(manager.Manager):
                 old_peers[interface] = self.peers[interface]
 
             # Check for lldp peers
-            lldpkeys = utils.execute(self.lldpcmd)
+            lldpkeys = utils.execute(self.lldpcmd, self.root_helper)
             for line in lldpkeys.split('\n'):
                 if not line or '=' not in line:
                     continue
