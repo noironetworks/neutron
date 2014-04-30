@@ -662,16 +662,19 @@ class APICManager(object):
     def add_hostlink(self,
                      host, ifname, ifmac,
                      switch, module, port):
+        prev_links = self.db.get_hostlinks_for_host_switchport(
+            host, switch, module, port)
         self.db.add_hostlink(host, ifname, ifmac,
                              switch, module, port)
-        self.ensure_infra_created_for_switch(switch)
-        self.ensure_vlans_created_for_host(host)
+        if not prev_links:
+            self.ensure_infra_created_for_switch(switch)
+            self.ensure_vlans_created_for_host(host)
 
     def remove_hostlink(self,
                         host, ifname, ifmac,
                         switch, module, port):
         self.db.delete_hostlink(host, ifname)
-        # TODO(mandeep): handle delete
+        # TODO(mandeep): delete the right elements
 
     def clean(self):
         """Clean up apic profiles and DB information (useful for testing)"""

@@ -234,6 +234,10 @@ class ApicDbModel(object):
         return self.session.query(HostLink).filter_by(
             host=host).all()
 
+    def get_hostlinks_for_host_switchport(self, host, swid, module, port):
+        return self.session.query(HostLink).filter_by(
+            host=host, swid=swid, module=module, port=port).all()
+
     def delete_hostlink(self, host, ifname):
         profile = self.session.query(HostLink).filter_by(
             host=host, ifname=ifname).first()

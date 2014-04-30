@@ -17,6 +17,7 @@
 
 import eventlet
 import re
+import sys
 
 from oslo.config import cfg
 
@@ -236,20 +237,18 @@ class ApicTopologyAgent(manager.Manager):
                     continue
                 fqkey, value = line.split('=', 1)
                 lldp, interface, key = fqkey.split('.', 2)
-                if interface not in self.peers:
-                    self.peers[interface] = None
                 if key == 'port.descr':
-                    mac = self._get_mac(interface)
-                    match = None
                     for regexp in self.port_desc_re:
                         match = regexp.match(value)
                         if match:
+                            mac = self._get_mac(interface)
                             if interface in old_peers:
                                 old_peers.pop(interface)
                             switch, module, port = match.group(1, 2, 3)
                             peer = (self.host, interface, mac,
                                     switch, module, port)
-                            if force_send or self.peers[interface] != peer:
+                            if force_send or interface not in self.peers or \
+                                    self.peers[interface] != peer:
                                 self.service_agent.update_link(context, *peer)
                                 self.peers[interface] = peer
             if old_peers:
