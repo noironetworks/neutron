@@ -92,7 +92,7 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def test_ensure_port_profile_created(self):
         port_name = mocked.APIC_PORT
-        self.mock_response_for_get('infraAccPortP', name=port_name)
+        self.mock_response_for_get(None)
         self.mock_responses_for_create('infraAccPortP')
         self.mock_response_for_get('infraAccPortP', name=port_name)
         port = self.mgr.ensure_port_profile_on_apic(port_name)
@@ -102,6 +102,7 @@ class TestCiscoApicManager(base.BaseTestCase,
     def test_ensure_port_profile_created_exc(self):
         port_name = mocked.APIC_PORT
         self.mock_error_post_response(wexc.HTTPBadRequest)
+        self.mock_response_for_get('infraAccPortP')
         self.mock_response_for_post('infraAccPortP')
         self.assertRaises(cexc.ApicResponseNotOk,
                           self.mgr.ensure_port_profile_on_apic,
@@ -203,6 +204,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         ns = mocked.APIC_VLAN_NAME
         mode = mocked.APIC_VLAN_MODE
         self.mock_db_query_filterby_first_return(None)
+        self.mock_db_query_distinct_return([])
         self.mock_response_for_get('fvnsVlanInstP', name=ns, mode=mode)
         self.mock_response_for_get('physDomP', name=mocked.APIC_DOMAIN)
         self.mock_response_for_get('infraAttEntityP',
@@ -218,12 +220,16 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def _ensure_infra_created_seq1_setup(self):
         self._infra_created_setup()
+        self.mock_db_query_filterby_first_return(None)
+        self.mock_db_query_filterby_all_return(None)
+        self._mock_get_switch_and_port_for_host()
+        self.mock_db_query_filter3_distinct_return([])
+
         am = 'neutron.plugins.ml2.drivers.cisco.apic.apic_manager.APICManager'
         np_create_for_switch = mock.patch(
             am + '.ensure_node_profile_created_for_switch').start()
-        self.mock_db_query_filterby_first_return(None)
         pp_create_for_switch = mock.patch(
-            am + '.ensure_port_profile_on_apic').start()
+            am + '.ensure_port_profile_created_for_switch').start()
         pp_create_for_switch.return_value = {'dn': 'port_profile_dn'}
         return np_create_for_switch, pp_create_for_switch
 
@@ -244,14 +250,19 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.mgr.db.add_profile_for_module_and_ports = mock.Mock()
 
         num_switches = len(self.mgr.switch_dict)
-        for loop in range(num_switches):
+        num_links = sum([len(j)
+                        for i in self.mgr.switch_dict.values()
+                        for j in i.values()])
+        self.mock_responses_for_create('infraAccPortP')
+        for loop in range(num_links-1):
             self.mock_responses_for_create('infraRsAccPortP')
+        for loop in range(num_switches):
             self.mock_responses_for_create('infraPortBlk')
 
         self.mgr.ensure_infra_created_on_apic()
         self.assert_responses_drained()
-        self.assertEqual(np_create_for_switch.call_count, num_switches)
-        self.assertEqual(pp_create_for_switch.call_count, num_switches)
+        self.assertEqual(np_create_for_switch.call_count, num_links)
+        self.assertEqual(pp_create_for_switch.call_count, num_links)
         for switch in self.mgr.switch_dict:
             np_create_for_switch.assert_any_call(switch)
 
@@ -268,9 +279,6 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def _ensure_infra_created_seq2_setup(self):
         self._infra_created_setup()
-        am = 'neutron.plugins.ml2.drivers.cisco.apic.apic_manager.APICManager'
-        np_create_for_switch = mock.patch(
-            am + '.ensure_node_profile_created_for_switch').start()
 
         def _profile_for_node(aswitch):
             profile = mock.Mock()
@@ -285,25 +293,22 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.mgr.db.get_profile_for_module_and_ports = mock.Mock(
             return_value=True)
 
+        am = 'neutron.plugins.ml2.drivers.cisco.apic.apic_manager.APICManager'
+        np_create_for_switch = mock.patch(
+            am + '.ensure_node_profile_created_for_switch').start()
         return np_create_for_switch
 
     def test_ensure_infra_created_seq2(self):
         np_create_for_switch = self._ensure_infra_created_seq2_setup()
-
-        num_switches = len(self.mgr.switch_dict)
-        for loop in range(num_switches):
-            self.mock_responses_for_create('infraHPortS')
-            self.mock_responses_for_create('infraRsAccBaseGrp')
-
         self.mgr.ensure_infra_created_on_apic()
         self.assert_responses_drained()
-        self.assertEqual(np_create_for_switch.call_count, num_switches)
-        for switch in self.mgr.switch_dict:
-            np_create_for_switch.assert_any_call(switch)
+        self.assertEqual(np_create_for_switch.call_count, 0)
 
     def test_ensure_infra_created_seq2_exc(self):
         np_create_for_switch = self._ensure_infra_created_seq2_setup()
 
+        self.mock_db_query_filterby_all_return([])
+        self.mock_db_query_filterby_distinct_return(['module'])
         self.mock_error_post_response(wexc.HTTPBadRequest)
         self.mock_response_for_post('infraHPortS')
 
@@ -574,11 +579,15 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assertTrue(self.mocked_session.delete.called)
         self.assertTrue(self.mocked_session.flush.called)
 
+    def _mock_get_switch_and_port_for_host(self):
+        self.mock_db_query_filterby_distinct_return([('swid', 'mod', 'port')])
+
     def test_ensure_path_created_for_port(self):
         epg = mock.Mock()
         epg.epg_id = 'epg01'
         eepg = mock.Mock(return_value=epg)
         apic_manager.APICManager.ensure_epg_created_for_network = eepg
+        self._mock_get_switch_and_port_for_host()
         self.mock_response_for_get('fvRsPathAtt', tDn='foo')
         self.mgr.ensure_path_created_for_port('tenant', 'network', 'rhel01',
                                               'static')
@@ -589,6 +598,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         epg.epg_id = 'epg2'
         eepg = mock.Mock(return_value=epg)
         self.mgr.ensure_epg_created_for_network = eepg
+        self._mock_get_switch_and_port_for_host()
         self.mock_response_for_get('fvRsPathAtt')
         self.mock_responses_for_create('fvRsPathAtt')
         self.mgr.ensure_path_created_for_port('tenant', 'network', 'ubuntu2',
@@ -601,6 +611,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         eepg = mock.Mock(return_value=epg)
         apic_manager.APICManager.ensure_epg_created_for_network = eepg
         self.mock_response_for_get('fvRsPathAtt', tDn='foo')
+        self.mock_db_query_filterby_distinct_return(None)
         self.assertRaises(cexc.ApicHostNotConfigured,
                           self.mgr.ensure_path_created_for_port,
                           'tenant', 'network', 'cirros3', 'static')

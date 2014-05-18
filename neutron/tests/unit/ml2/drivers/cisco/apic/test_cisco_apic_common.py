@@ -22,7 +22,9 @@ from oslo.config import cfg
 
 from neutron.common import config as neutron_config
 from neutron.plugins.ml2 import config as ml2_config
+from neutron.plugins.ml2.drivers import type_vlan
 from neutron.plugins.ml2.drivers.cisco.apic import apic_client as apic
+from neutron.plugins.ml2.drivers.cisco.apic import config as apic_config
 from neutron.tests.unit import test_api_v2
 
 
@@ -178,7 +180,7 @@ class ConfigMixin(object):
             'tenant_network_types': ['vlan'],
         }
         for opt, val in ml2_opts.items():
-                ml2_config.cfg.CONF.set_override(opt, val, 'ml2')
+                cfg.CONF.set_override(opt, val, 'ml2')
 
         # Configure the ML2 type_vlan opts
         ml2_type_vlan_opts = {
@@ -243,3 +245,26 @@ class DbModelMixin(object):
         """Mock db.session.query().filterby().first() to return value."""
         query = self.mocked_session.query.return_value
         query.filter_by.return_value.first.return_value = value
+
+    def mock_db_query_filterby_distinct_return(self, value):
+        """Mock db.session.query().filterby().distinct() to return value."""
+        query = self.mocked_session.query.return_value
+        query.filter_by.return_value.distinct.return_value = value
+
+    def mock_db_query_filterby_all_return(self, value):
+        """Mock db.session.query().filterby().all() to return value."""
+        query = self.mocked_session.query.return_value
+        query.filter_by.return_value.all.return_value = value
+
+    def mock_db_query_filter3_distinct_return(self, value):
+        """Mock db.session.query().filter().filter().filter().distinct()
+           to return value."""
+        query = self.mocked_session.query.return_value
+        query_filter3 = \
+            query.filter.return_value.filter.return_value.filter.return_value
+        query_filter3.distinct.return_value = value
+
+    def mock_db_query_distinct_return(self, value):
+        """Mock db.session.query().distinct() to return value."""
+        query = self.mocked_session.query.return_value
+        query.distinct.return_value = value
