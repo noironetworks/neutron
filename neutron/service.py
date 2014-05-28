@@ -302,5 +302,5 @@ class Service(service.Service):
 
     def report_state(self):
         """Update the state of this service."""
-        # Todo(gongysh) report state to neutron server
-        pass
+        ctxt = context.get_admin_context()
+        self.manager.report_send(ctxt)
