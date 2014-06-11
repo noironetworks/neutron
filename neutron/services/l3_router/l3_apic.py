@@ -22,6 +22,7 @@ from neutron.db import db_base_plugin_v2
 from neutron.db import extraroute_db
 from neutron.db import l3_gwmode_db
 from neutron.db import model_base
+from neutron.openstack.common import excutils
 from neutron.plugins.common import constants
 
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
@@ -89,10 +90,13 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                                           anetwork_id, asubnet_id)
 
         # Create interface in parent
-        port = super(ApicL3ServicePlugin, self).add_router_interface(
-            context, router_id, interface_info)
-
-        return port
+        try :
+            return super(ApicL3ServicePlugin, self).add_router_interface(
+                context, router_id, interface_info)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                self.manager.remove_router_interface(atenant_id, arouter_id,
+                                                     anetwork_id, asubnet_id)
 
     def remove_router_interface(self, context, router_id, interface_info):
         port = self.get_port(context, interface_info['port_id'])
@@ -110,5 +114,10 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                                              anetwork_id, asubnet_id)
 
         # Delete interface in parent
-        super(ApicL3ServicePlugin, self).remove_router_interface(
-            context, router_id, interface_info)
+        try:
+            super(ApicL3ServicePlugin, self).remove_router_interface(
+                context, router_id, interface_info)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                self.manager.add_router_interface(atenant_id, arouter_id,
+                                                  anetwork_id, asubnet_id)
