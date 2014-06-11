@@ -20,7 +20,6 @@ import netaddr
 from oslo.config import cfg
 
 from neutron.extensions import portbindings
-from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.common import constants
 from neutron.plugins.ml2 import driver_api as api

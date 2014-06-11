@@ -254,7 +254,7 @@ class TestCiscoApicManager(base.BaseTestCase,
                         for i in self.mgr.switch_dict.values()
                         for j in i.values()])
         self.mock_responses_for_create('infraAccPortP')
-        for loop in range(num_links-1):
+        for loop in range(num_links - 1):
             self.mock_responses_for_create('infraRsAccPortP')
         for loop in range(num_switches):
             self.mock_responses_for_create('infraPortBlk')

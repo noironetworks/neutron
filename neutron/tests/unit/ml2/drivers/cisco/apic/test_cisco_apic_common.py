@@ -21,10 +21,7 @@ import requests
 from oslo.config import cfg
 
 from neutron.common import config as neutron_config
-from neutron.plugins.ml2 import config as ml2_config
-from neutron.plugins.ml2.drivers import type_vlan
 from neutron.plugins.ml2.drivers.cisco.apic import apic_client as apic
-from neutron.plugins.ml2.drivers.cisco.apic import config as apic_config
 from neutron.tests.unit import test_api_v2
 
 
@@ -257,8 +254,9 @@ class DbModelMixin(object):
         query.filter_by.return_value.all.return_value = value
 
     def mock_db_query_filter3_distinct_return(self, value):
-        """Mock db.session.query().filter().filter().filter().distinct()
-           to return value."""
+        """Mock to return value.
+        db.session.query().filter().filter().filter().distinct()
+        """
         query = self.mocked_session.query.return_value
         query_filter3 = \
             query.filter.return_value.filter.return_value.filter.return_value

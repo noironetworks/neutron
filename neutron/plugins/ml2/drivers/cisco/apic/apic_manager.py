@@ -18,13 +18,11 @@
 import itertools
 import uuid
 
-from keystoneclient.v2_0 import client as keyclient
-
 from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.ml2.drivers.cisco.apic import apic_client
-from neutron.plugins.ml2.drivers.cisco.apic import apic_model
 from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper
+from neutron.plugins.ml2.drivers.cisco.apic import apic_model
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
 
 
@@ -677,7 +675,7 @@ class APICManager(object):
         # TODO(mandeep): delete the right elements
 
     def clean(self):
-        """Clean up apic profiles and DB information (useful for testing)"""
+        """Clean up apic profiles and DB information (useful for testing)."""
         # clean infra profiles
         vlan_ns_name = self.apic_config.apic_vlan_ns_name
         self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'dynamic')

@@ -17,29 +17,23 @@
 
 import eventlet
 import re
-import sys
 
 from oslo.config import cfg
 
-from neutron import service
-from neutron import manager
-from neutron.agent import rpc as agent_rpc
 from neutron.agent.common import config
-from neutron.agent.linux import utils
 from neutron.agent.linux import ip_lib
+from neutron.agent.linux import utils
 from neutron.common import rpc as neutron_rpc
 from neutron.common import utils as neutron_utils
 from neutron.db import agents_db
-from neutron.openstack.common import log as logging
+from neutron import manager
 from neutron.openstack.common import lockutils
+from neutron.openstack.common import log as logging
 from neutron.openstack.common import periodic_task
-from neutron.openstack.common import service as svc
 from neutron.openstack.common import rpc
-
-from neutron.plugins.ml2.drivers import type_vlan
-from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
+from neutron.openstack.common import service as svc
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
-
+from neutron import service
 
 ACI_PORT_DESCR_FORMATS = [
     'topology/pod-1/node-(\d+)/sys/conng/path-\[eth(\d+)/(\d+)\]',
@@ -206,7 +200,7 @@ class ApicTopologyAgent(manager.Manager):
                 self.uplink_ports.append(inf)
             else:
                 # ignore unknown interfaces
-                LOG.error(_("No such interface (ignored): %s", inf))
+                LOG.error(_("No such interface (ignored): %s"), inf)
         self.lldpcmd = ['lldpctl', '-f', 'keyvalue'] + self.uplink_ports
 
     def after_start(self):

@@ -15,8 +15,6 @@
 #
 # @author: Arvind Somya (asomya@cisco.com), Cisco Systems Inc.
 
-from oslo.config import cfg
-
 from neutron.db import api as qdbapi
 from neutron.db import db_base_plugin_v2
 from neutron.db import extraroute_db
@@ -90,7 +88,7 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                                           anetwork_id, asubnet_id)
 
         # Create interface in parent
-        try :
+        try:
             return super(ApicL3ServicePlugin, self).add_router_interface(
                 context, router_id, interface_info)
         except Exception:

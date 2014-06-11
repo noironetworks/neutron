@@ -17,8 +17,6 @@
 
 import mock
 
-from oslo.config import cfg
-
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic as md
 from neutron.plugins.ml2.drivers import type_vlan  # noqa
 from neutron.tests import base

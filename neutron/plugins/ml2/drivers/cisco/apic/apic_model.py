@@ -64,7 +64,7 @@ class TenantContract(model_base.BASEV2, models_v2.HasTenant):
 
 class HostLink(model_base.BASEV2):
 
-    """Connectivity of host links"""
+    """Connectivity of host links."""
 
     __tablename__ = 'cisco_ml2_apic_host_links'
 
