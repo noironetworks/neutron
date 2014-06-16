@@ -33,6 +33,7 @@ from neutron.openstack.common import periodic_task
 from neutron.openstack.common import rpc
 from neutron.openstack.common import service as svc
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
+from neutron.plugins.ml2.drivers import type_vlan  # noqa
 from neutron import service
 
 ACI_PORT_DESCR_FORMATS = [
