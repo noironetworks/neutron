@@ -61,31 +61,30 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         return _("L3 Router Service Plugin for basic L3 using the APIC")
 
     def delete_router(self, context, router_id):
-        tenant_id = context.tenant_id
-
-        # Map openstack IDs to APIC IDs
-        atenant_id, arouter_id, anetwork_id, asubnet_id = self._map_names(
-            context, tenant_id, router_id, None, None)
-
         # Delete the router
-        self.manager.delete_router(atenant_id, arouter_id)
+        self.manager.delete_router(router_id)
 
         # Delete router in parent
         super(ApicL3ServicePlugin, self).delete_router(context, router_id)
 
     def add_router_interface(self, context, router_id, interface_info):
         tenant_id = context.tenant_id
-        subnet_id = interface_info['subnet_id']
-        subnet = self.get_subnet(context, subnet_id)
-        network_id = subnet['network_id']
+        if 'subnet_id' in interface_info:
+            subnet_id = interface_info['subnet_id']
+            subnet = self.get_subnet(context, subnet_id)
+            network_id = subnet['network_id']
+        else:
+            port = self._core_plugin._get_port(context,
+                                               interface_info['port_id'])
+            network_id = port['network_id']
 
         # Map openstack IDs to APIC IDs
-        atenant_id, arouter_id, anetwork_id, asubnet_id = self._map_names(
-            context, tenant_id, router_id, network_id, subnet_id)
+        atenant_id, arouter_id, anetwork_id, _ = self._map_names(
+            context, tenant_id, router_id, network_id, None)
 
         # Program APIC
-        self.manager.add_router_interface(atenant_id, arouter_id,
-                                          anetwork_id, asubnet_id)
+        self.manager.add_router_interface(atenant_id, router_id,
+                                          anetwork_id)
 
         # Create interface in parent
         try:
@@ -93,8 +92,8 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                 context, router_id, interface_info)
         except Exception:
             with excutils.save_and_reraise_exception():
-                self.manager.remove_router_interface(atenant_id, arouter_id,
-                                                     anetwork_id, asubnet_id)
+                self.manager.remove_router_interface(atenant_id, router_id,
+                                                     anetwork_id)
 
     def remove_router_interface(self, context, router_id, interface_info):
         port = self.get_port(context, interface_info['port_id'])
@@ -104,12 +103,12 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         network_id = subnet['network_id']
 
         # Map openstack IDs to APIC IDs
-        atenant_id, arouter_id, anetwork_id, asubnet_id = self._map_names(
-            context, tenant_id, router_id, network_id, subnet_id)
+        atenant_id, arouter_id, anetwork_id, _ = self._map_names(
+            context, tenant_id, router_id, network_id, None)
 
         # Program APIC
-        self.manager.remove_router_interface(atenant_id, arouter_id,
-                                             anetwork_id, asubnet_id)
+        self.manager.remove_router_interface(atenant_id, router_id,
+                                             anetwork_id)
 
         # Delete interface in parent
         try:
@@ -118,4 +117,4 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         except Exception:
             with excutils.save_and_reraise_exception():
                 self.manager.add_router_interface(atenant_id, arouter_id,
-                                                  anetwork_id, asubnet_id)
+                                                  anetwork_id)

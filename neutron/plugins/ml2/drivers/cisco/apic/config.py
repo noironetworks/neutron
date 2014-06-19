@@ -45,10 +45,10 @@ apic_opts = [
                help=_("Name for the VMM domain to be created for Openstack")),
     cfg.StrOpt('apic_app_profile_name',
                default='openstack_app',
-               help=_("Name for the app profile used for openstack")),
+               help=_("Name for the app profile used for Openstack")),
     cfg.StrOpt('apic_vlan_ns_name',
                default='openstack_ns',
-               help=_("Name for the vlan namespace to be used for openstack")),
+               help=_("Name for the vlan namespace to be used for Openstack")),
     cfg.StrOpt('apic_vlan_range',
                default='2:4093',
                help=_("Range of VLAN's to be used for Openstack")),
@@ -87,25 +87,43 @@ apic_opts = [
 cfg.CONF.register_opts(apic_opts, "ml2_cisco_apic")
 
 
-def switch_dictionary():
-    switch_dict = {}
+def _get_specific_config(prefix):
+    """retrieve config in the format [<prefix>:<value>]."""
+    conf_dict = {}
     multi_parser = cfg.MultiConfigParser()
     read_ok = multi_parser.read(cfg.CONF.config_file)
-
     if len(read_ok) != len(cfg.CONF.config_file):
         raise cfg.Error(_("Some config files were not parsed properly"))
 
     for parsed_file in multi_parser.parsed:
         for parsed_item in parsed_file.keys():
-            if parsed_item.startswith('apic_switch'):
+            if parsed_item.startswith(prefix):
                 switch, switch_id = parsed_item.split(':')
-                if switch.lower() == 'apic_switch':
-                    switch_dict[switch_id] = switch_dict.get(switch_id, {})
-                    port_cfg = parsed_file[parsed_item].items()
-                    for host_list, port in port_cfg:
-                        hosts = host_list.split(',')
-                        port = port[0]
-                        switch_dict[switch_id][port] = \
-                            switch_dict[switch_id].get(port, []) + hosts
+                if switch.lower() == prefix:
+                    conf_dict[switch_id] = parsed_file[parsed_item].items()
+    return conf_dict
 
+
+def switch_dictionary():
+    switch_dict = {}
+    conf = _get_specific_config('apic_switch')
+    for switch_id in conf:
+        switch_dict[switch_id] = switch_dict.get(switch_id, {})
+        for host_list, port in conf[switch_id]:
+            hosts = host_list.split(',')
+            port = port[0]
+            switch_dict[switch_id][port] = \
+                switch_dict[switch_id].get(port, []) + hosts
     return switch_dict
+
+
+def external_network_dictionary():
+    # TODO(ivar): validate external network configuration
+    router_dict = {}
+    conf = _get_specific_config('apic_external_network')
+    for net_id in conf:
+        router_dict[net_id] = router_dict.get(net_id, {})
+        for key, value in conf[net_id]:
+            router_dict[net_id][key] = value[0] if value else None
+
+    return router_dict

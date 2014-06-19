@@ -32,13 +32,28 @@ LOG = log.getLogger(__name__)
 CONTEXT_ENFORCED = '1'
 CONTEXT_UNENFORCED = '2'
 CONTEXT_DEFAULT = 'default'
+CONTEXT_SHARED = 'shared'
 DN_KEY = 'dn'
 PORT_DN_PATH = 'topology/pod-1/paths-%s/pathep-[eth%s/%s]'
+NODE_DN_PATH = 'topology/pod-1/node-%s'
+POD_POLICY_GROUP_DN_PATH = 'uni/fabric/funcprof/podpgrp-%s'
+CP_PATH_DN = 'uni/tn-%s/brc-%s'
 SCOPE_GLOBAL = 'global'
 SCOPE_TENANT = 'tenant'
 TENANT_COMMON = 'common'
 NAMING_STRATEGY_UUID = 'use_uuid'
 NAMING_STRATEGY_NAMES = 'use_name'
+
+# L3 External constants
+EXT_NODE = 'os-lnode'
+EXT_INTERFACE = 'os-linterface'
+EXT_EPG = 'os-external_epg'
+
+# Contract constants
+CP_SUBJ = 'os-subject'
+CP_FILTER = 'os-filter'
+CP_ENTRY = 'os-entry'
+CP_INTERFACE = 'os-interface'
 
 
 class APICManager(object):
@@ -53,6 +68,7 @@ class APICManager(object):
         self.apic_config = apic_config
         self.vlan_ranges = network_config['vlan_ranges']
         self.switch_dict = network_config['switch_dict']
+        self.ext_net_dict = network_config['external_network_dict']
 
         # Connect to the the APIC
         self.apic = apic_client.RestClient(
@@ -71,6 +87,10 @@ class APICManager(object):
         self.entity_profile = None
         self.function_profile = None
         self.clear_node_profiles = apic_config.apic_clear_node_profiles
+
+    def _create_if_not_exist(self, mo, *params, **attributes):
+        if not mo.get(*params):
+            mo.create(*params, **attributes)
 
     def ensure_infra_created_on_apic(self):
         """Ensure the infrastructure is setup.
@@ -310,7 +330,6 @@ class APICManager(object):
     def ensure_port_profile_created_for_switch(self, switch):
         """Check and create infra port profiles for a node."""
         sprofile = self.db.get_port_profile_for_node(switch)
-        ppname = None
         if not sprofile:
             # Generate uuid for port profile name
             ppname = uuid.uuid4()
@@ -338,6 +357,30 @@ class APICManager(object):
         except (cexc.ApicResponseNotOk, KeyError):
             with excutils.save_and_reraise_exception():
                 self.apic.infraAccPortP.delete(name)
+
+    def ensure_bgp_pod_policy_created_on_apic(self, bgp_pol_name='default',
+                                              asn=1, pp_group_name='default',
+                                              p_selector_name='default'):
+        """Set the route reflector for the fabric if missing."""
+        self._create_if_not_exist(self.apic.bgpInstPol, bgp_pol_name)
+        if not self.apic.bgpRRP.get_subtree(bgp_pol_name):
+            for node in self.apic.fabricNode.list_all(role='spine'):
+                self._create_if_not_exist(self.apic.bgpRRNodePEp,
+                                          bgp_pol_name,
+                                          node['id'])
+
+        self._create_if_not_exist(self.apic.bgpAsP, bgp_pol_name, asn=asn)
+
+        self._create_if_not_exist(self.apic.fabricPodPGrp, pp_group_name)
+        reference = self.apic.fabricRsPodPGrpBGPRRP.get(pp_group_name)
+        if not reference['tnBgpInstPolName']:
+            self.apic.fabricRsPodPGrpBGPRRP.update(
+                pp_group_name, tnBgpInstPolName=bgp_pol_name)
+
+        self._create_if_not_exist(self.apic.fabricPodS__ALL, p_selector_name,
+                                  type='ALL')
+        self._create_if_not_exist(self.apic.fabricRsPodPGrp, p_selector_name,
+                                  tDn=POD_POLICY_GROUP_DN_PATH % pp_group_name)
 
     @staticmethod
     def group_by_ranges(i):
@@ -436,22 +479,24 @@ class APICManager(object):
         # Remove DB row
         self.db.delete_epg(epg)
 
-    def create_tenant_filter(self, tenant_id):
+    def create_tenant_filter(self, tenant_id, fuuid, euuid=CP_ENTRY):
         """Creates a tenant filter and a generic entry under it."""
-        fuuid = uuid.uuid4()
         try:
             # Create a new tenant filter
-            self.apic.vzFilter.create(tenant_id, fuuid)
+            self._create_if_not_exist(self.apic.vzFilter, tenant_id, fuuid)
             # Create a new entry
-            euuid = uuid.uuid4()
-            self.apic.vzEntry.create(tenant_id, fuuid, euuid)
-            return fuuid
+            self._create_if_not_exist(self.apic.vzEntry, tenant_id, fuuid,
+                                      euuid)
         except (cexc.ApicResponseNotOk, KeyError):
             with excutils.save_and_reraise_exception():
                 self.apic.vzFilter.delete(tenant_id, fuuid)
 
-    def get_contract_for_epg(self, tenant_id, epg_id, contract_id):
+    def get_prov_contract_for_epg(self, tenant_id, epg_id, contract_id):
         return self.apic.fvRsProv.get(
+            tenant_id, self.app_profile_name, epg_id, contract_id)
+
+    def get_cons_contract_for_epg(self, tenant_id, epg_id, contract_id):
+        return self.apic.fvRsCons.get(
             tenant_id, self.app_profile_name, epg_id, contract_id)
 
     def set_contract_for_epg(self, tenant_id, epg_id,
@@ -489,46 +534,49 @@ class APICManager(object):
             self.apic.fvRsCons.delete(
                 tenant_id, self.app_profile_name, epg_id, contract_id)
 
-    def get_router_contract(self, tenant_id):
+    def get_router_contract(self, router_id, owner=TENANT_COMMON,
+                            suuid=CP_SUBJ, iuuid=CP_INTERFACE,
+                            fuuid=CP_FILTER):
         """Creates a tenant contract for router
 
         Create a tenant contract if one doesn't exist. Also create a
         subject, filter and entry and set the filters to allow all
         protocol traffic on all ports
         """
-        contract = self.db.get_contract_for_tenant(tenant_id)
-        if not contract:
-            cuuid = uuid.uuid4()
-            try:
-                # Create contract
-                self.apic.vzBrCP.create(tenant_id, cuuid, scope=SCOPE_TENANT)
-                acontract = self.apic.vzBrCP.get(tenant_id, cuuid)
-                # Create subject
-                suuid = uuid.uuid4()
-                self.apic.vzSubj.create(tenant_id, cuuid, suuid)
-                # Create filter and entry
-                tfilter = self.create_tenant_filter(tenant_id)
-                # Create interm and outterm
-                self.apic.vzInTerm.create(tenant_id, cuuid, suuid)
-                self.apic.vzRsFiltAtt__In.create(tenant_id, cuuid,
-                                                 suuid, tfilter)
-                self.apic.vzOutTerm.create(tenant_id, cuuid, suuid)
-                self.apic.vzRsFiltAtt__Out.create(tenant_id, cuuid,
-                                                  suuid, tfilter)
-                # Create contract interface
-                iuuid = uuid.uuid4()
-                self.apic.vzCPIf.create(tenant_id, iuuid)
-                self.apic.vzRsIf.create(tenant_id, iuuid,
-                                        tDn=acontract[DN_KEY])
-                # Store contract in DB
-                contract = self.db.write_contract_for_tenant(tenant_id,
-                                                             cuuid, tfilter)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete tenant contract
-                    self.apic.vzBrCP.delete(tenant_id, cuuid)
+        contract = self.db.get_contract_for_router(router_id)
+        cuuid = uuid.uuid4() if not contract else contract.contract_id
+        try:
+            # Create contract
+            self._create_if_not_exist(self.apic.vzBrCP, owner, cuuid,
+                                      scope=SCOPE_TENANT)
+            # Create subject
+            self._create_if_not_exist(self.apic.vzSubj, owner, cuuid,
+                                      suuid)
+            # Create filter and entry
+            self.create_tenant_filter(owner, fuuid)
+            self._create_if_not_exist(self.apic.vzRsSubjFiltAtt, owner,
+                                      cuuid, suuid, fuuid)
+            # Create contract interface
+            self._create_if_not_exist(self.apic.vzCPIf, owner, iuuid)
+            self.apic.vzRsIf.create(owner, iuuid,
+                                    tDn=CP_PATH_DN % (owner, cuuid))
+            # Store contract in DB
+            if not contract:
+                contract = self.db.write_contract_for_router(owner, router_id,
+                                                             cuuid, fuuid)
+        except (cexc.ApicResponseNotOk, KeyError):
+            with excutils.save_and_reraise_exception():
+                # Delete tenant contract
+                self.apic.vzBrCP.delete(owner, cuuid)
 
         return contract
+
+    def delete_router_contract(self, router_id):
+        """Delete the contract related to a given Router."""
+        contract = self.db.get_contract_for_router(router_id)
+        if contract:
+            self.apic.vzBrCP.delete(contract.tenant_id, contract.contract_id)
+            self.db.delete_contract_for_router(router_id)
 
     def ensure_context_unenforced(self, tenant_id, ctx_id):
         """Set the specified tenant's context to unenforced."""
@@ -540,7 +588,8 @@ class APICManager(object):
             self.apic.fvCtx.update(
                 tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
 
-    def ensure_context_enforced(self, tenant_id, ctx_id):
+    def ensure_context_enforced(self, tenant_id=TENANT_COMMON,
+                                ctx_id=CONTEXT_SHARED):
         """Set the specified tenant's context to enforced."""
         ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
         if not ctx:
@@ -568,16 +617,16 @@ class APICManager(object):
             self.apic.vzRsAnyToCons.create(
                 tenant_id, ctx_id, contract_id)
 
-    def make_tenant_contract_global(self, tenant_id):
+    def make_tenant_contract_global(self, router_id):
         """Mark the tenant contract's scope to global."""
-        contract = self.db.get_contract_for_tenant(tenant_id)
-        self.apic.vzBrCP.update(tenant_id, contract.contract_id,
+        contract = self.db.get_contract_for_router(router_id)
+        self.apic.vzBrCP.update(contract.tenant_id, contract.contract_id,
                                 scope=SCOPE_GLOBAL)
 
-    def make_tenant_contract_local(self, tenant_id):
+    def make_tenant_contract_local(self, router_id):
         """Mark the tenant contract's scope to tenant."""
-        contract = self.db.get_contract_for_tenant(tenant_id)
-        self.apic.vzBrCP.update(tenant_id, contract.contract_id,
+        contract = self.db.get_contract_for_router(router_id)
+        self.apic.vzBrCP.update(contract.tenant_id, contract.contract_id,
                                 scope=SCOPE_TENANT)
 
     def ensure_path_created_for_port(self, tenant_id, network_id,
@@ -619,30 +668,35 @@ class APICManager(object):
                 tenant_id, network_id, host, encap)
 
     def add_router_interface(self, tenant_id, router_id,
-                             network_id, subnet_id):
+                             network_id, owner=TENANT_COMMON,
+                             context=CONTEXT_SHARED):
         # Get contract and epg
-        contract = self.get_router_contract(tenant_id)
+        contract = self.get_router_contract(router_id, owner=owner)
         epg = self.ensure_epg_created_for_network(tenant_id, network_id)
 
-        # Ensure that the router ctx and a router contract exists
-        self.ensure_context_enforced(tenant_id, router_id)
-        self.ensure_context_any_contract(
-            tenant_id, router_id, contract.contract_id)
+        # Ensure that the router ctx exists
+        self.ensure_context_enforced(owner, context)
 
         # update corresponding BD's ctx to this router ctx
         bd_id = network_id
-        self.apic.fvRsCtx.update(tenant_id, bd_id, tnFvCtxName=router_id)
-
+        self.apic.fvRsCtx.update(tenant_id, bd_id, tnFvCtxName=context)
         # set the EPG to provide this contract
-        if not self.get_contract_for_epg(tenant_id, epg.epg_id,
-                                         contract.contract_id):
+        if not self.get_prov_contract_for_epg(tenant_id, epg.epg_id,
+                                              contract.contract_id):
             self.set_contract_for_epg(
                 tenant_id, epg.epg_id, contract.contract_id, True)
 
+        # set the EPG to consume this contract
+        if not self.get_cons_contract_for_epg(tenant_id, epg.epg_id,
+                                              contract.contract_id):
+            self.set_contract_for_epg(
+                tenant_id, epg.epg_id, contract.contract_id)
+
     def remove_router_interface(self, tenant_id, router_id,
-                                network_id, subnet_id):
+                                network_id, owner=TENANT_COMMON,
+                                context=CONTEXT_SHARED):
         # Get contract and epg
-        contract = self.get_router_contract(tenant_id)
+        contract = self.get_router_contract(router_id, owner=owner)
         epg = self.ensure_epg_created_for_network(tenant_id, network_id)
 
         # Delete contract for this epg
@@ -652,10 +706,81 @@ class APICManager(object):
         # set the BDs' ctx to default
         bd_id = network_id
         self.apic.fvRsCtx.update(
-            tenant_id, bd_id, tnFvCtxName=CONTEXT_DEFAULT)
+            tenant_id, bd_id, tnFvCtxName=context)
 
-    def delete_router(self, tenant_id, router_id):
-        self.apic.fvCtx.delete(tenant_id, router_id)
+    def delete_router(self, router_id):
+        self.delete_router_contract(router_id)
+
+    def delete_external_routed_network(self, network_id, owner=TENANT_COMMON):
+        self.apic.l3extRsEctx.delete(owner, network_id)
+
+    def ensure_external_routed_network_created(self, network_id,
+                                               owner=TENANT_COMMON,
+                                               context=CONTEXT_SHARED):
+        """Creates a L3 External context on the APIC."""
+        self._create_if_not_exist(self.apic.l3extOut, owner, network_id)
+        # Link external context to the internal router ctx
+        self.apic.l3extRsEctx.update(owner,
+                                     network_id, tnFvCtxName=context)
+
+    def ensure_logical_node_profile_created(self, network_id,
+                                            switch, module, port, encap,
+                                            address, owner=TENANT_COMMON):
+        """Creates Logical Node Profile for External Network in APIC."""
+        try:
+            self._create_if_not_exist(self.apic.l3extLNodeP, owner, network_id,
+                                      EXT_NODE)
+            # TODO(ivar): default value for router id
+            self._create_if_not_exist(
+                self.apic.l3extRsNodeL3OutAtt, owner, network_id, EXT_NODE,
+                NODE_DN_PATH % switch, rtrId='1.0.0.1')
+            self._create_if_not_exist(
+                self.apic.l3extRsPathL3OutAtt, owner, network_id, EXT_NODE,
+                EXT_INTERFACE, PORT_DN_PATH % (switch, module, port),
+                encap=encap or 'unknown', addr=address,
+                ifInstT='l3-port' if not encap else 'sub-interface')
+
+        except (cexc.ApicResponseNotOk, KeyError):
+            with excutils.save_and_reraise_exception():
+                self.apic.l3extLNodeP.delete(owner, network_id,
+                                             EXT_NODE)
+
+    def ensure_static_route_created(self, network_id, switch,
+                                    next_hop, subnet='0.0.0.0/0',
+                                    owner=TENANT_COMMON):
+        """Add static route to existing External Routed Network."""
+        self._create_if_not_exist(self.apic.ipNexthopP, owner, network_id,
+                                  EXT_NODE, NODE_DN_PATH % switch, subnet,
+                                  next_hop)
+
+    def ensure_external_epg_created(self, router_id, subnet='0.0.0.0/0',
+                                    owner=TENANT_COMMON):
+        """Add EPG to existing External Routed Network."""
+        self._create_if_not_exist(self.apic.l3extSubnet, owner, router_id,
+                                  EXT_EPG, subnet)
+
+    def ensure_external_epg_consumed_contract(self, network_id, contract_id,
+                                              owner=TENANT_COMMON):
+        self._create_if_not_exist(self.apic.fvRsCons__Ext, owner,
+                                  network_id, EXT_EPG, contract_id)
+
+    def ensure_external_epg_provided_contract(self, network_id, contract_id,
+                                              owner=TENANT_COMMON):
+        self._create_if_not_exist(self.apic.fvRsProv__Ext, owner,
+                                  network_id, EXT_EPG, contract_id)
+
+    def delete_external_epg_contract(self, router_id, network_id,
+                                     owner=TENANT_COMMON):
+        contract = self.db.get_contract_for_router(router_id)
+        if contract:
+            self.apic.fvRsCons__Ext.delete(owner, network_id, EXT_EPG,
+                                           contract.contract_id)
+            self.apic.fvRsProv__Ext.delete(owner, network_id, EXT_EPG,
+                                           contract.contract_id)
+
+    def ensure_external_routed_network_deleted(self, network_id,
+                                               owner=TENANT_COMMON):
+        self.apic.l3extOut.delete(owner, network_id)
 
     def add_hostlink(self,
                      host, ifname, ifmac,

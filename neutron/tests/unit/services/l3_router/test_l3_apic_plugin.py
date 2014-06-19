@@ -83,6 +83,7 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         self.plugin.name_mapper.network.return_value = mocked.APIC_NETWORK
         self.plugin.name_mapper.subnet.return_value = mocked.APIC_SUBNET
         self.plugin.name_mapper.port.return_value = mocked.APIC_PORT
+        self.plugin.name_mapper.router.return_value = mocked.APIC_ROUTER
 
         self.contract = FakeContract()
         self.plugin.manager.get_router_contract = mock.Mock()
@@ -115,7 +116,8 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         mgr = self.plugin.manager
         self.plugin.add_router_interface(self.context, ROUTER,
                                          self.interface_info)
-        mgr.get_router_contract.assert_called_once_with(mocked.APIC_TENANT)
+        mgr.get_router_contract.assert_called_once_with(mocked.APIC_ROUTER,
+                                                        owner='common')
         mgr.ensure_epg_created_for_network.assertEqual(TENANT_CONTRACT)
         mgr.ensure_epg_created_for_network.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK)
@@ -128,7 +130,8 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         mgr = self.plugin.manager
         self.plugin.remove_router_interface(self.context, ROUTER,
                                             self.interface_info)
-        mgr.get_router_contract.assert_called_once_with(mocked.APIC_TENANT)
+        mgr.get_router_contract.assert_called_once_with(mocked.APIC_ROUTER,
+                                                        owner='common')
         mgr.ensure_epg_created_for_network.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK)
         mgr.ensure_epg_created_for_network.assertEqual(NETWORK_EPG)

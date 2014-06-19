@@ -68,6 +68,8 @@ APIC_VLANID_TO = 2999
 APIC_VLAN_FROM = 'vlan-%d' % APIC_VLANID_FROM
 APIC_VLAN_TO = 'vlan-%d' % APIC_VLANID_TO
 
+APIC_ROUTER = 'router1'
+
 
 class ControllerMixin(object):
 
@@ -220,6 +222,14 @@ class ConfigMixin(object):
                 '4/22': ['rhel03'],
             },
         }
+        self.external_network_dict = {
+            'ext_net_1': {
+                'switch': '18',
+                'module': '1',
+                'port': '31',
+                'type': 'static',
+            },
+        }
         self.mocked_parser = mock.patch.object(
             cfg, 'MultiConfigParser').start()
         self.mocked_parser.return_value.read.return_value = [apic_switch_cfg]
@@ -266,3 +276,9 @@ class DbModelMixin(object):
         """Mock db.session.query().distinct() to return value."""
         query = self.mocked_session.query.return_value
         query.distinct.return_value = value
+
+
+class FakeDbContract(object):
+
+    def __init__(self, contract_id):
+        self.contract_id = contract_id

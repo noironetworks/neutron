@@ -18,8 +18,6 @@
 import mock
 from webob import exc as wexc
 
-from neutron.openstack.common import uuidutils
-
 from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
 from neutron.tests import base
@@ -43,6 +41,7 @@ class TestCiscoApicManager(base.BaseTestCase,
             self.apic_config, {
                 'switch_dict': self.switch_dict,
                 'vlan_ranges': self.vlan_ranges,
+                'external_network_dict': self.external_network_dict,
             })
         self.session = self.mgr.apic.session
         self.assert_responses_drained()
@@ -619,17 +618,20 @@ class TestCiscoApicManager(base.BaseTestCase,
     def test_create_tenant_filter(self):
         tenant = mocked.APIC_TENANT
         self.mock_responses_for_create('vzFilter')
+        self.mock_response_for_get('vzFilter')
         self.mock_responses_for_create('vzEntry')
-        filter_id = self.mgr.create_tenant_filter(tenant)
+        self.mock_response_for_get('vzEntry')
+        self.mgr.create_tenant_filter(tenant, apic_manager.CP_FILTER)
         self.assert_responses_drained()
-        self.assertTrue(uuidutils.is_uuid_like(str(filter_id)))
 
     def test_create_tenant_filter_exc(self):
         tenant = mocked.APIC_TENANT
         self.mock_error_post_response(wexc.HTTPBadRequest)
         self.mock_response_for_post('vzFilter')
+        self.mock_response_for_get('vzFilter')
         self.assertRaises(cexc.ApicResponseNotOk,
-                          self.mgr.create_tenant_filter, tenant)
+                          self.mgr.create_tenant_filter, tenant,
+                          apic_manager.CP_FILTER)
         self.assert_responses_drained()
 
     def test_set_contract_for_epg_consumer(self):
@@ -684,40 +686,49 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assertTrue(self.mocked_session.merge.called)
         self.assertTrue(self.mocked_session.flush.called)
 
+    def _mock_get_router_contract_calls(self):
+        self.mock_responses_for_create('vzBrCP')
+        self.mock_response_for_get('vzBrCP')
+        self.mock_responses_for_create('vzSubj')
+        self.mock_response_for_get('vzSubj')
+        self.mock_responses_for_create('vzFilter')
+        self.mock_response_for_get('vzFilter')
+        self.mock_responses_for_create('vzEntry')
+        self.mock_response_for_get('vzEntry')
+        self.mock_responses_for_create('vzRsSubjFiltAtt')
+        self.mock_response_for_get('vzRsSubjFiltAtt')
+        self.mock_responses_for_create('vzCPIf')
+        self.mock_response_for_get('vzCPIf')
+        self.mock_responses_for_create('vzRsIf')
+
     def test_get_router_contract_existing(self):
+        router = mocked.APIC_ROUTER
         tenant = mocked.APIC_TENANT
-        contract = mocked.APIC_CONTRACT
+        contract = mocked.FakeDbContract(mocked.APIC_CONTRACT)
         self.mock_db_query_filterby_first_return(contract)
-        new_contract = self.mgr.get_router_contract(tenant)
+        self._mock_get_router_contract_calls()
+        new_contract = self.mgr.get_router_contract(router, owner=tenant)
+        self.assert_responses_drained()
         self.assertEqual(new_contract, contract)
 
     def test_get_router_contract_new(self):
+        router = mocked.APIC_ROUTER
         tenant = mocked.APIC_TENANT
-        contract = mocked.APIC_CONTRACT
-        dn = self.mgr.apic.vzBrCP.mo.dn(tenant, contract)
         self.mock_db_query_filterby_first_return(None)
-        self.mock_responses_for_create('vzBrCP')
-        self.mock_response_for_get('vzBrCP', dn=dn)
-        self.mock_responses_for_create('vzSubj')
-        self.mock_responses_for_create('vzFilter')
-        self.mock_responses_for_create('vzEntry')
-        self.mock_responses_for_create('vzInTerm')
-        self.mock_responses_for_create('vzRsFiltAtt__In')
-        self.mock_responses_for_create('vzOutTerm')
-        self.mock_responses_for_create('vzRsFiltAtt__Out')
-        self.mock_responses_for_create('vzCPIf')
-        self.mock_responses_for_create('vzRsIf')
-        new_contract = self.mgr.get_router_contract(tenant)
+        self._mock_get_router_contract_calls()
+        new_contract = self.mgr.get_router_contract(router, owner=tenant)
         self.assert_responses_drained()
         self.assertTrue(self.mocked_session.add.called)
         self.assertTrue(self.mocked_session.flush.called)
         self.assertEqual(new_contract['tenant_id'], tenant)
+        self.assertEqual(new_contract['router_id'], router)
 
     def test_get_router_contract_exc(self):
         tenant = mocked.APIC_TENANT
         self.mock_db_query_filterby_first_return(None)
         self.mock_error_post_response(wexc.HTTPBadRequest)
         self.mock_response_for_post('vzBrCP')
+        self.mock_response_for_get('vzBrCP')
         self.assertRaises(cexc.ApicResponseNotOk,
                           self.mgr.get_router_contract, tenant)
         self.assert_responses_drained()

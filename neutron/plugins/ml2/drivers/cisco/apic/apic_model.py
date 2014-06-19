@@ -51,13 +51,18 @@ class PortProfile(model_base.BASEV2):
     to_port = sa.Column(sa.Integer(), nullable=False)
 
 
-class TenantContract(model_base.BASEV2, models_v2.HasTenant):
+class RouterContract(model_base.BASEV2, models_v2.HasTenant):
 
-    """Contracts (and Filters) created on the APIC."""
+    """Contracts (and Filters) created on the APIC.
+
+    tenant_id represents the owner (APIC side) of the contract.
+    router_id is the UUID of the router (Neutron side) this contract is
+    referring to.
+    """
 
     __tablename__ = 'cisco_ml2_apic_contracts'
 
-    __table_args__ = (sa.PrimaryKeyConstraint('tenant_id'),)
+    router_id = sa.Column(sa.String(64), nullable=False, primary_key=True)
     contract_id = sa.Column(sa.String(64), nullable=False)
     filter_id = sa.Column(sa.String(64), nullable=False)
 
@@ -194,20 +199,30 @@ class ApicDbModel(object):
         self.session.delete(epg)
         self._flush()
 
-    def get_contract_for_tenant(self, tenant_id):
-        """Returns the specified tenant's contract."""
-        return self.session.query(TenantContract).filter_by(
-            tenant_id=tenant_id).first()
+    def get_contract_for_router(self, router_id):
+        """Returns the specified router's contract."""
+        return self.session.query(RouterContract).filter_by(
+            router_id=router_id).first()
 
-    def write_contract_for_tenant(self, tenant_id, contract_id, filter_id):
+    def write_contract_for_router(self, tenant_id, router_id,
+                                  contract_id, filter_id):
         """Stores a new contract for the given tenant."""
-        contract = TenantContract(tenant_id=tenant_id,
+        contract = RouterContract(tenant_id=tenant_id,
+                                  router_id=router_id,
                                   contract_id=contract_id,
                                   filter_id=filter_id)
         self.session.add(contract)
         self._flush()
 
         return contract
+
+    def delete_contract_for_router(self, router_id):
+        """Stores a new contract for the given tenant."""
+        contract = self.session.query(RouterContract).filter_by(
+            router_id=router_id).first()
+        if contract:
+            self.session.delete(contract)
+            self._flush()
 
     def delete_profile_for_node(self, node_id):
         """Deletes the port profile for a node."""
@@ -312,7 +327,7 @@ class ApicDbModel(object):
     def clean(self):
         self.session.query(NetworkEPG).delete()
         self.session.query(PortProfile).delete()
-        self.session.query(TenantContract).delete()
+        self.session.query(RouterContract).delete()
         self.session.query(HostLink).delete()
         self.session.query(ApicName).delete()
         self.session.query(ApicKey).delete()

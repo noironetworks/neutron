@@ -79,8 +79,25 @@ class ManagedObjectClass(object):
         'vzRsFiltAtt__In': ManagedObjectName('vzInTerm', 'rsfiltAtt-%s'),
         'vzOutTerm': ManagedObjectName('vzSubj', 'outtmnl'),
         'vzRsFiltAtt__Out': ManagedObjectName('vzOutTerm', 'rsfiltAtt-%s'),
+        'vzRsSubjFiltAtt': ManagedObjectName('vzSubj', 'rssubjFiltAtt-%s'),
         'vzCPIf': ManagedObjectName('fvTenant', 'cif-%s'),
         'vzRsIf': ManagedObjectName('vzCPIf', 'rsif'),
+
+        'l3extOut': ManagedObjectName('fvTenant', 'out-%s'),
+        'l3extRsEctx': ManagedObjectName('l3extOut', 'rsectx'),
+        'l3extLNodeP': ManagedObjectName('l3extOut', 'lnodep-%s'),
+        'l3extRsNodeL3OutAtt': ManagedObjectName('l3extLNodeP',
+                                                 'rsnodeL3OutAtt-[%s]'),
+        'ipRouteP': ManagedObjectName('l3extRsNodeL3OutAtt', 'rt-[%s]'),
+        'ipNexthopP': ManagedObjectName('ipRouteP', 'nh-[%s]'),
+        'l3extLIfP': ManagedObjectName('l3extLNodeP', 'lifp-%s'),
+        'l3extRsPathL3OutAtt': ManagedObjectName('l3extLIfP',
+                                                 'rspathL3OutAtt-[%s]'),
+        'l3extInstP': ManagedObjectName('l3extOut', 'instP-%s'),
+        'fvRsCons__Ext': ManagedObjectName('l3extInstP', 'rscons-%s'),
+        'fvRsProv__Ext': ManagedObjectName('l3extInstP', 'rsprov-%s'),
+        'fvCollectionCont': ManagedObjectName('fvRsCons', 'collectionDn-[%s]'),
+        'l3extSubnet': ManagedObjectName('l3extInstP', 'extsubnet-[%s]'),
 
         'vmmProvP': ManagedObjectName(None, 'vmmp-%s', False),
         'vmmDomP': ManagedObjectName('vmmProvP', 'dom-%s'),
@@ -111,12 +128,29 @@ class ManagedObjectClass(object):
         'fvnsEncapBlk__vxlan': ManagedObjectName('fvnsVxlanInstP',
                                                  'from-%s-to-%s'),
 
+        # Fabric
+        'fabric': ManagedObjectName(None, 'fabric', False),
+        'bgpInstPol': ManagedObjectName('fabric', 'bgpInstP-%s'),
+        'bgpRRP': ManagedObjectName('bgpInstPol', 'rr'),
+        'bgpRRNodePEp': ManagedObjectName('bgpRRP', 'node-%s'),
+        'bgpAsP': ManagedObjectName('bgpInstPol', 'as'),
+
+        'funcprof': ManagedObjectName('fabric', 'funcprof', False),
+        'fabricPodPGrp': ManagedObjectName('funcprof', 'podpgrp-%s'),
+        'fabricRsPodPGrpBGPRRP': ManagedObjectName('fabricPodPGrp',
+                                                   'rspodPGrpBGPRRP'),
+
+        'fabricPodP': ManagedObjectName('fabric', 'podprof-default'),
+        'fabricPodS__ALL': ManagedObjectName('fabricPodP', 'pods-%s-typ-ALL'),
+        'fabricRsPodPGrp': ManagedObjectName('fabricPodS__ALL', 'rspodPGrp'),
+
         # Read-only
         'fabricTopology': ManagedObjectName(None, 'topology', False),
         'fabricPod': ManagedObjectName('fabricTopology', 'pod-%s', False),
         'fabricPathEpCont': ManagedObjectName('fabricPod', 'paths-%s', False),
         'fabricPathEp': ManagedObjectName('fabricPathEpCont', 'pathep-%s',
                                           False),
+        'fabricNode': ManagedObjectName('fabricPod', 'node-%s', False),
     }
 
     # Note(Henry): The use of a mutable default argument _inst_cache is
@@ -201,6 +235,18 @@ class ApicSession(object):
         """Create a URL for a query lookup by MO class."""
         return '%s/class/%s.json' % (self.api_base, mo.klass_name)
 
+    def _subtree_url(self, mo, *args, **kwargs):
+        cfilter = kwargs.get('cfilter')
+        return self._mo_url(mo, *args) + \
+            '?query-target=children&%srsp-subtree=full' % \
+            ('target-subtree-class=' + cfilter + '&' if cfilter else '')
+
+    def _bulid_target_filter(self, mo, **kwargs):
+        """Creates an 'and(eq(), eq(), ...)' filter for requests."""
+        filt = ', '.join(['eq(%s.%s, \"%s\")' %
+                          (mo.klass_name, key, kwargs[key]) for key in kwargs])
+        return '' if not filt else 'query-target-filter=and(%s)' % filt
+
     def _check_session(self):
         """Check that we are logged in and ensure the session is active."""
         if not self.authentication:
@@ -258,10 +304,15 @@ class ApicSession(object):
         url = self._mo_url(mo, *args) + '?query-target=self'
         return self._send(self.session.get, url)
 
-    def list_mo(self, mo):
+    def get_mo_subtree(self, mo, *args, **kwargs):
+        self._check_session()
+        url = self._subtree_url(mo, *args, **kwargs)
+        return self._send(self.session.get, url)
+
+    def list_mo(self, mo, **kwargs):
         """Retrieve the list of managed objects for a class."""
         self._check_session()
-        url = self._qry_url(mo)
+        url = self._qry_url(mo) + '?' + self._bulid_target_filter(mo, **kwargs)
         return self._send(self.session.get, url)
 
     def post_data(self, request, data):
@@ -389,12 +440,15 @@ class ManagedObjectAccess(object):
         if imdata:
             return self._mo_attributes(imdata[0])
 
-    def list_all(self):
-        imdata = self.session.list_mo(self.mo)
+    def get_subtree(self, *params, **kwargs):
+        return self.session.get_mo_subtree(self.mo, *params, **kwargs)
+
+    def list_all(self, **kwargs):
+        imdata = self.session.list_mo(self.mo, **kwargs)
         return filter(None, [self._mo_attributes(obj) for obj in imdata])
 
-    def list_names(self):
-        return [obj['name'] for obj in self.list_all()]
+    def list_names(self, **kwargs):
+        return [obj['name'] for obj in self.list_all(**kwargs)]
 
     def update(self, *params, **attrs):
         return self.session.post_mo(self.mo, *params, **attrs)

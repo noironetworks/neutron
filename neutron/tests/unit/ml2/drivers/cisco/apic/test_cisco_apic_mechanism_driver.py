@@ -62,6 +62,8 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
     def test_initialize(self):
         mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_manager.'
                    'APICManager.ensure_infra_created_on_apic').start()
+        mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_manager.'
+                   'APICManager.ensure_bgp_pod_policy_created_on_apic').start()
         self.driver.initialize()
         self.session = self.driver.apic_manager.apic.session
         self.assert_responses_drained()
@@ -176,6 +178,9 @@ class FakeSubnetContext(object):
     def __init__(self, subnet, network):
         self._subnet = subnet
         self._network = network
+        self._plugin = mock.Mock()
+        self._plugin_context = mock.Mock()
+        self._plugin.get_network.return_value = {}
 
     @property
     def current(self):
