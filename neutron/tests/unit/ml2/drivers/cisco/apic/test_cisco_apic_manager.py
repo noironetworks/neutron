@@ -118,8 +118,7 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def test_ensure_node_profile_created_for_switch_new(self):
         new_switch = mocked.APIC_NODE_PROF
-        self.mock_response_for_get('infraNodeP')
-        self.mock_responses_for_create('infraNodeP')
+        self.mock_responses_for_create_if_not_exists('infraNodeP')
         self.mock_responses_for_create('infraLeafS')
         self.mock_responses_for_create('infraNodeBlk')
         self.mock_response_for_get('infraNodeP', name=new_switch)
@@ -148,8 +147,7 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def _mock_phys_dom_responses(self, dom, seg_type=None):
         dn = self.mgr.apic.physDomP.mo.dn(dom)
-        self.mock_response_for_get('physDomP')
-        self.mock_responses_for_create('physDomP')
+        self.mock_responses_for_create_if_not_exists('physDomP')
         if seg_type:
             self.mock_responses_for_create(seg_type)
         self.mock_response_for_get('physDomP', name=dom, dn=dn)
@@ -157,8 +155,7 @@ class TestCiscoApicManager(base.BaseTestCase,
     def _mock_new_dom_responses(self, dom, seg_type=None):
         vmm = mocked.APIC_VMMP
         dn = self.mgr.apic.vmmDomP.mo.dn(vmm, dom)
-        self.mock_response_for_get('vmmDomP')
-        self.mock_responses_for_create('vmmDomP')
+        self.mock_responses_for_create_if_not_exists('vmmDomP')
         if seg_type:
             self.mock_responses_for_create(seg_type)
         self.mock_response_for_get('vmmDomP', name=dom, dn=dn)
@@ -318,8 +315,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assertEqual(np_create_for_switch.call_count, 1)
 
     def test_ensure_context_unenforced_new_ctx(self):
-        self.mock_response_for_get('fvCtx')
-        self.mock_responses_for_create('fvCtx')
+        self.mock_responses_for_create_if_not_exists('fvCtx')
         self.mgr.ensure_context_unenforced(
             mocked.APIC_TENANT, mocked.APIC_L3CTX)
         self.assert_responses_drained()
@@ -352,8 +348,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assert_responses_drained()
 
     def _mock_new_entity_profile(self, exc=None):
-        self.mock_response_for_get('infraAttEntityP')
-        self.mock_responses_for_create('infraAttEntityP')
+        self.mock_responses_for_create_if_not_exists('infraAttEntityP')
         self.mock_responses_for_create('infraRsDomP')
         if exc:
             self.mock_error_get_response(exc, code='103', text=u'Fail')
@@ -401,8 +396,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         fp = mocked.APIC_FUNC_PROF
         dn = self.mgr.apic.infraAttEntityP.mo.dn(fp)
         self.mgr.entity_profile = {'dn': dn}
-        self.mock_response_for_get('infraAccPortGrp')
-        self.mock_responses_for_create('infraAccPortGrp')
+        self.mock_responses_for_create_if_not_exists('infraAccPortGrp')
         self.mock_responses_for_create('infraRsAttEntP')
         self.mock_response_for_get('infraAccPortGrp', name=fp, dn=dn)
         self.mgr.ensure_function_profile_created_on_apic(fp)
@@ -468,8 +462,7 @@ class TestCiscoApicManager(base.BaseTestCase,
     def test_ensure_tenant_created_on_apic(self):
         self.mock_response_for_get('fvTenant', name='any')
         self.mgr.ensure_tenant_created_on_apic('two')
-        self.mock_response_for_get('fvTenant')
-        self.mock_responses_for_create('fvTenant')
+        self.mock_responses_for_create_if_not_exists('fvTenant')
         self.mgr.ensure_tenant_created_on_apic('four')
         self.assert_responses_drained()
 
@@ -479,10 +472,8 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assert_responses_drained()
 
     def test_ensure_bd_created_not_ctx(self):
-        self.mock_response_for_get('fvBD')
-        self.mock_responses_for_create('fvBD')
-        self.mock_response_for_get('fvCtx')
-        self.mock_responses_for_create('fvCtx')
+        self.mock_responses_for_create_if_not_exists('fvBD')
+        self.mock_responses_for_create_if_not_exists('fvCtx')
         self.mock_responses_for_create('fvRsCtx')
         self.mgr.ensure_bd_created_on_apic('t2', 'three')
         self.assert_responses_drained()
@@ -496,8 +487,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assert_responses_drained()
 
     def test_ensure_bd_created_ctx_pref1(self):
-        self.mock_response_for_get('fvBD')
-        self.mock_responses_for_create('fvBD')
+        self.mock_responses_for_create_if_not_exists('fvBD')
         self.mock_response_for_get('fvCtx', pcEnfPref='1')
         self.mock_responses_for_create('fvRsCtx')
         self.mgr.ensure_bd_created_on_apic('t3', 'four')
@@ -520,8 +510,7 @@ class TestCiscoApicManager(base.BaseTestCase,
     def test_ensure_subnet_created(self):
         self.mock_response_for_get('fvSubnet', name='sn1')
         self.mgr.ensure_subnet_created_on_apic('t0', 'bd1', '2.2.2.2/8')
-        self.mock_response_for_get('fvSubnet')
-        self.mock_responses_for_create('fvSubnet')
+        self.mock_responses_for_create_if_not_exists('fvSubnet')
         self.mgr.ensure_subnet_created_on_apic('t2', 'bd3', '4.4.4.4/16')
         self.assert_responses_drained()
 
@@ -598,8 +587,7 @@ class TestCiscoApicManager(base.BaseTestCase,
         eepg = mock.Mock(return_value=epg)
         self.mgr.ensure_epg_created_for_network = eepg
         self._mock_get_switch_and_port_for_host()
-        self.mock_response_for_get('fvRsPathAtt')
-        self.mock_responses_for_create('fvRsPathAtt')
+        self.mock_responses_for_create_if_not_exists('fvRsPathAtt')
         self.mgr.ensure_path_created_for_port('tenant', 'network', 'ubuntu2',
                                               'static')
         self.assert_responses_drained()
@@ -617,10 +605,8 @@ class TestCiscoApicManager(base.BaseTestCase,
 
     def test_create_tenant_filter(self):
         tenant = mocked.APIC_TENANT
-        self.mock_responses_for_create('vzFilter')
-        self.mock_response_for_get('vzFilter')
-        self.mock_responses_for_create('vzEntry')
-        self.mock_response_for_get('vzEntry')
+        self.mock_responses_for_create_if_not_exists('vzFilter')
+        self.mock_responses_for_create_if_not_exists('vzEntry')
         self.mgr.create_tenant_filter(tenant, apic_manager.CP_FILTER)
         self.assert_responses_drained()
 
@@ -687,18 +673,12 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assertTrue(self.mocked_session.flush.called)
 
     def _mock_get_router_contract_calls(self):
-        self.mock_responses_for_create('vzBrCP')
-        self.mock_response_for_get('vzBrCP')
-        self.mock_responses_for_create('vzSubj')
-        self.mock_response_for_get('vzSubj')
-        self.mock_responses_for_create('vzFilter')
-        self.mock_response_for_get('vzFilter')
-        self.mock_responses_for_create('vzEntry')
-        self.mock_response_for_get('vzEntry')
-        self.mock_responses_for_create('vzRsSubjFiltAtt')
-        self.mock_response_for_get('vzRsSubjFiltAtt')
-        self.mock_responses_for_create('vzCPIf')
-        self.mock_response_for_get('vzCPIf')
+        self.mock_responses_for_create_if_not_exists('vzBrCP')
+        self.mock_responses_for_create_if_not_exists('vzSubj')
+        self.mock_responses_for_create_if_not_exists('vzFilter')
+        self.mock_responses_for_create_if_not_exists('vzEntry')
+        self.mock_responses_for_create_if_not_exists('vzRsSubjFiltAtt')
+        self.mock_responses_for_create_if_not_exists('vzCPIf')
         self.mock_responses_for_create('vzRsIf')
 
     def test_get_router_contract_existing(self):
@@ -732,3 +712,44 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.assertRaises(cexc.ApicResponseNotOk,
                           self.mgr.get_router_contract, tenant)
         self.assert_responses_drained()
+
+    def test_ensure_external_routed_network_created(self):
+        self.mock_responses_for_create_if_not_exists('l3extOut')
+        self.mock_response_for_post('l3extRsEctx')
+        self.mgr.ensure_external_routed_network_created(
+            mocked.APIC_NETWORK)
+        self.assert_responses_drained()
+
+    def test_ensure_logical_node_profile_created(self):
+
+        self.mock_responses_for_create_if_not_exists('l3extLNodeP')
+        self.mock_responses_for_create_if_not_exists('l3extRsNodeL3OutAtt')
+        self.mock_responses_for_create_if_not_exists('l3extRsPathL3OutAtt')
+        self.mgr.ensure_logical_node_profile_created(
+            mocked.APIC_NETWORK, mocked.APIC_EXT_SWITCH,
+            mocked.APIC_EXT_MODULE, mocked.APIC_EXT_PORT,
+            mocked.APIC_EXT_ENCAP, mocked.APIC_EXT_CIDR_EXPOSED)
+        self.assert_responses_drained()
+
+    def test_ensure_static_route_created(self):
+        self.mock_responses_for_create_if_not_exists('ipNexthopP')
+        self.mgr.ensure_static_route_created(mocked.APIC_NETWORK,
+                                             mocked.APIC_EXT_SWITCH,
+                                             mocked.APIC_EXT_GATEWAY_IP)
+        self.assert_responses_drained()
+
+    def test_ensure_external_epg_created(self):
+        self.mock_responses_for_create_if_not_exists('l3extSubnet')
+        self.mgr.ensure_external_epg_created(mocked.APIC_ROUTER)
+        self.assert_responses_drained()
+
+    def test_ensure_external_epg_consumed_contract(self):
+        self.mock_responses_for_create_if_not_exists('fvRsCons__Ext')
+        self.mgr.ensure_external_epg_consumed_contract(mocked.APIC_NETWORK,
+                                                       mocked.APIC_CONTRACT)
+        self.assert_responses_drained()
+
+    def test_ensure_external_epg_provided_contract(self):
+        self.mock_responses_for_create_if_not_exists('fvRsProv__Ext')
+        self.mgr.ensure_external_epg_provided_contract(mocked.APIC_NETWORK,
+                                                       mocked.APIC_CONTRACT)

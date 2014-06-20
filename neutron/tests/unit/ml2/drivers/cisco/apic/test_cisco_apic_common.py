@@ -70,6 +70,13 @@ APIC_VLAN_TO = 'vlan-%d' % APIC_VLANID_TO
 
 APIC_ROUTER = 'router1'
 
+APIC_EXT_SWITCH = '203'
+APIC_EXT_MODULE = '1'
+APIC_EXT_PORT = '34'
+APIC_EXT_ENCAP = 'vlan-100'
+APIC_EXT_CIDR_EXPOSED = '10.10.40.2/16'
+APIC_EXT_GATEWAY_IP = '10.10.40.1'
+
 
 class ControllerMixin(object):
 
@@ -130,6 +137,10 @@ class ControllerMixin(object):
             apic.ManagedObjectClass(obj).container)
         name = '-'.join([obj, 'name'])  # useful for debugging
         self._stage_mocked_response('post', OK, obj, name=name)
+
+    def mock_responses_for_create_if_not_exists(self, obj):
+        self.mock_response_for_get(obj)
+        self.mock_responses_for_create(obj)
 
     def _mock_container_responses_for_create(self, obj):
         # Recursively generate responses for creating obj's containers.
@@ -223,11 +234,12 @@ class ConfigMixin(object):
             },
         }
         self.external_network_dict = {
-            'ext_net_1': {
-                'switch': '18',
-                'module': '1',
-                'port': '31',
-                'type': 'static',
+            APIC_NETWORK + '-name': {
+                'switch': APIC_EXT_SWITCH,
+                'port': APIC_EXT_MODULE + '/' + APIC_EXT_PORT,
+                'encap': APIC_EXT_ENCAP,
+                'cidr_exposed': APIC_EXT_CIDR_EXPOSED,
+                'gateway_ip': APIC_EXT_GATEWAY_IP,
             },
         }
         self.mocked_parser = mock.patch.object(
