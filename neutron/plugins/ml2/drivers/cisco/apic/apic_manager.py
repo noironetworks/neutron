@@ -72,7 +72,7 @@ class APICManager(object):
 
         # Connect to the the APIC
         self.apic = apic_client.RestClient(
-            apic_config.apic_host,
+            apic_config.apic_hosts,
             apic_config.apic_port,
             apic_config.apic_username,
             apic_config.apic_password
@@ -359,7 +359,7 @@ class APICManager(object):
                 self.apic.infraAccPortP.delete(name)
 
     def ensure_bgp_pod_policy_created_on_apic(self, bgp_pol_name='default',
-                                              asn=1, pp_group_name='default',
+                                              asn='1', pp_group_name='default',
                                               p_selector_name='default'):
         """Set the route reflector for the fabric if missing."""
         self._create_if_not_exist(self.apic.bgpInstPol, bgp_pol_name)

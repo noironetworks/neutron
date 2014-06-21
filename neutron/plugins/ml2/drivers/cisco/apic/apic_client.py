@@ -15,12 +15,13 @@
 #
 # @author: Henry Gessau, Cisco Systems
 
+from collections import deque
 from collections import namedtuple
 import time
 
 import json
 import requests
-import requests.exceptions
+import requests.exceptions as rexc
 
 from neutron.openstack.common import log as logging
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
@@ -30,6 +31,8 @@ LOG = logging.getLogger(__name__)
 
 APIC_CODE_FORBIDDEN = str(requests.codes.forbidden)
 
+FALLBACK_EXCEPTIONS = (rexc.ConnectionError, rexc.Timeout,
+                       rexc.TooManyRedirects, rexc.InvalidURL)
 
 # Info about a Managed Object's relative name (RN) and container.
 class ManagedObjectName(namedtuple('MoPath',
@@ -202,9 +205,10 @@ class ApicSession(object):
 
     """Manages a session with the APIC."""
 
-    def __init__(self, host, port, usr, pwd, ssl):
+    def __init__(self, hosts, port, usr, pwd, ssl):
         protocol = ssl and 'https' or 'http'
-        self.api_base = '%s://%s:%s/api' % (protocol, host, port)
+        self.api_base = deque(['%s://%s:%s/api' % (protocol, host, port)
+                               for host in hosts])
         self.session = requests.Session()
         self.session_deadline = 0
         self.session_timeout = 0
@@ -217,6 +221,18 @@ class ApicSession(object):
         if usr and pwd:
             self.login(usr, pwd)
 
+    def _do_request(self, request, url, *args, **kwargs):
+        """Use this method to wrap all the http requests"""
+        for _ in range(len(self.api_base)):
+            try:
+                return request(self.api_base[0] + url, *args, **kwargs)
+            except FALLBACK_EXCEPTIONS as ex:
+                LOG.debug('%s, falling back to a '
+                          'new address' % ex.message)
+                self.api_base.rotate(-1)
+                LOG.debug('New controller address: %s ' % self.api_base[0])
+        return request(self.api_base[0] + url, *args, **kwargs)
+
     @staticmethod
     def _make_data(key, **attrs):
         """Build the body for a msg out of a key and some attributes."""
@@ -224,16 +240,16 @@ class ApicSession(object):
 
     def _api_url(self, api):
         """Create the URL for a generic API."""
-        return '%s/%s.json' % (self.api_base, api)
+        return '/%s.json' % api
 
     def _mo_url(self, mo, *args):
         """Create a URL for a MO lookup by DN."""
         dn = mo.dn(*args)
-        return '%s/mo/%s.json' % (self.api_base, dn)
+        return '/mo/%s.json' % dn
 
     def _qry_url(self, mo):
         """Create a URL for a query lookup by MO class."""
-        return '%s/class/%s.json' % (self.api_base, mo.klass_name)
+        return '/class/%s.json' % mo.klass_name
 
     def _subtree_url(self, mo, *args, **kwargs):
         cfilter = kwargs.get('cfilter')
@@ -257,9 +273,10 @@ class ApicSession(object):
     def _send(self, request, url, data=None, refreshed=None):
         """Send a request and process the response."""
         if data is None:
-            response = request(url, cookies=self.cookie)
+            response = self._do_request(request, url, cookies=self.cookie)
         else:
-            response = request(url, data=data, cookies=self.cookie)
+            response = self._do_request(request, url, data=data,
+                                        cookies=self.cookie)
         if response is None:
             raise cexc.ApicHostNoResponse(url=url)
         # Every request refreshes the timeout
@@ -356,8 +373,9 @@ class ApicSession(object):
         self.cookie = {}
 
         try:
-            response = self.session.post(url, data=name_pwd, timeout=10.0)
-        except requests.exceptions.Timeout:
+            response = self._do_request(self.session.post, url, data=name_pwd,
+                                        timeout=10.0)
+        except rexc.Timeout:
             raise cexc.ApicHostNoResponse(url=url)
         attributes = self._save_cookie('aaaLogin', response)
         if response.status_code == requests.codes.ok:
@@ -375,7 +393,8 @@ class ApicSession(object):
     def refresh(self):
         """Called when a session has timed out or almost timed out."""
         url = self._api_url('aaaRefresh')
-        response = self.session.get(url, cookies=self.cookie)
+        response = self._do_request(self.session.get, url,
+                                    cookies=self.cookie)
         attributes = self._save_cookie('aaaRefresh', response)
         if response.status_code == requests.codes.ok:
             # We refreshed before the session timed out.
@@ -461,9 +480,9 @@ class RestClient(ApicSession):
 
     """APIC REST client for OpenStack Neutron."""
 
-    def __init__(self, host, port=80, usr=None, pwd=None, ssl=False):
+    def __init__(self, hosts, port=80, usr=None, pwd=None, ssl=False):
         """Establish a session with the APIC."""
-        super(RestClient, self).__init__(host, port, usr, pwd, ssl)
+        super(RestClient, self).__init__(hosts, port, usr, pwd, ssl)
 
         # TODO(Henry): Instantiate supported MOs on demand instead of
         #              creating all of them up front here.

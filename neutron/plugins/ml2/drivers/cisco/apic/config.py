@@ -25,6 +25,10 @@ DEFAULT_ROOT_HELPER = \
 apic_opts = [
     cfg.StrOpt('apic_host',
                help=_("Host name or IP Address of the APIC controller")),
+    cfg.ListOpt('apic_hosts',
+                default=[],
+                help=_("An ordered list of host names or IP addresses of "
+                       "the APIC controller(s).")),
     cfg.StrOpt('apic_username',
                default='admin',
                help=_("Username for the APIC controller")),
