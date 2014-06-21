@@ -73,7 +73,6 @@ class APICManager(object):
         # Connect to the the APIC
         self.apic = apic_client.RestClient(
             apic_config.apic_hosts,
-            apic_config.apic_port,
             apic_config.apic_username,
             apic_config.apic_password
         )

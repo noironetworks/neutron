@@ -23,8 +23,6 @@ DEFAULT_ROOT_HELPER = \
 
 
 apic_opts = [
-    cfg.StrOpt('apic_host',
-               help=_("Host name or IP Address of the APIC controller")),
     cfg.ListOpt('apic_hosts',
                 default=[],
                 help=_("An ordered list of host names or IP addresses of "
@@ -35,9 +33,6 @@ apic_opts = [
     cfg.StrOpt('apic_password',
                help=_("Password for the APIC controller"),
                secret=True),
-    cfg.StrOpt('apic_port',
-               default='80',
-               help=_("Communication port for the APIC controller")),
     cfg.StrOpt('apic_name_mapping',
                default='use_name',
                help=_("Name mapping strategy to use: use_uuid | use_name")),

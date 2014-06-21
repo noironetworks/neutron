@@ -205,9 +205,9 @@ class ApicSession(object):
 
     """Manages a session with the APIC."""
 
-    def __init__(self, hosts, port, usr, pwd, ssl):
+    def __init__(self, hosts, usr, pwd, ssl):
         protocol = ssl and 'https' or 'http'
-        self.api_base = deque(['%s://%s:%s/api' % (protocol, host, port)
+        self.api_base = deque(['%s://%s/api' % (protocol, host)
                                for host in hosts])
         self.session = requests.Session()
         self.session_deadline = 0
@@ -480,9 +480,9 @@ class RestClient(ApicSession):
 
     """APIC REST client for OpenStack Neutron."""
 
-    def __init__(self, hosts, port=80, usr=None, pwd=None, ssl=False):
+    def __init__(self, hosts, usr=None, pwd=None, ssl=False):
         """Establish a session with the APIC."""
-        super(RestClient, self).__init__(hosts, port, usr, pwd, ssl)
+        super(RestClient, self).__init__(hosts, usr, pwd, ssl)
 
         # TODO(Henry): Instantiate supported MOs on demand instead of
         #              creating all of them up front here.
