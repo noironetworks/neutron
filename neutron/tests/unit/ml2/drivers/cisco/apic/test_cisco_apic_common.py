@@ -27,7 +27,7 @@ from neutron.tests.unit import test_api_v2
 
 OK = requests.codes.ok
 
-APIC_HOST = 'fake.controller.local'
+APIC_HOSTS = ['fake.controller.local']
 APIC_PORT = 7580
 APIC_USR = 'notadmin'
 APIC_PWD = 'topsecret'
@@ -203,10 +203,9 @@ class ConfigMixin(object):
 
         # Configure the Cisco APIC mechanism driver
         apic_test_config = {
-            'apic_host': APIC_HOST,
+            'apic_hosts': APIC_HOSTS,
             'apic_username': APIC_USR,
             'apic_password': APIC_PWD,
-            'apic_port': APIC_PORT,
             'apic_vmm_domain': APIC_DOMAIN,
             'apic_vlan_ns_name': APIC_VLAN_NAME,
             'apic_vlan_range': '%d:%d' % (APIC_VLANID_FROM, APIC_VLANID_TO),

@@ -31,7 +31,7 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
     def setUp(self):
         super(TestCiscoApicClient, self).setUp()
         self.set_up_mocks()
-        self.apic = apic.RestClient(mocked.APIC_HOST)
+        self.apic = apic.RestClient(mocked.APIC_HOSTS)
         self.addCleanup(mock.patch.stopall)
 
     def _mock_authenticate(self, timeout=None):
@@ -44,7 +44,7 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
     def test_login_by_instantiation(self):
         self.reset_reponses()
         self.mock_apic_manager_login_responses()
-        apic2 = apic.RestClient(mocked.APIC_HOST,
+        apic2 = apic.RestClient(mocked.APIC_HOSTS,
                                 usr=mocked.APIC_USR, pwd=mocked.APIC_PWD)
         self.assertIsNotNone(apic2.authentication)
         self.assertEqual(apic2.username, mocked.APIC_USR)
@@ -53,12 +53,12 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
         self._mock_authenticate()
         self.assertEqual(
             self.apic.authentication['userName'], mocked.APIC_USR)
-        self.assertTrue(self.apic.api_base.startswith('http://'))
+        self.assertTrue(self.apic.api_base[0].startswith('http://'))
         self.assertEqual(self.apic.username, mocked.APIC_USR)
         self.assertIsNotNone(self.apic.authentication)
-        self.apic = apic.RestClient(mocked.APIC_HOST, mocked.APIC_PORT,
+        self.apic = apic.RestClient(mocked.APIC_HOSTS, mocked.APIC_PORT,
                                     ssl=True)
-        self.assertTrue(self.apic.api_base.startswith('https://'))
+        self.assertTrue(self.apic.api_base[0].startswith('https://'))
 
     def test_client_session_login_fail(self):
         self.mock_error_post_response(requests.codes.unauthorized,
@@ -68,6 +68,7 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
                           mocked.APIC_USR, mocked.APIC_PWD)
 
     def test_client_session_login_timeout(self):
+        self.response['post'].append(requests.exceptions.Timeout)
         self.response['post'].append(requests.exceptions.Timeout)
         self.assertRaises(cexc.ApicHostNoResponse, self.apic.login,
                           mocked.APIC_USR, mocked.APIC_PWD)
