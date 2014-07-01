@@ -23,11 +23,11 @@ DEFAULT_ROOT_HELPER = \
 
 
 # oslo.config limits ${var} expansion to global variables
-# So, for now, we have apic_system_id as a global/DEFAULT variable
+# That is why apic_system_id as a global variable
 global_opts = [
     cfg.StrOpt('apic_system_id',
                default='openstack',
-               help=_("Name for the domain/prefix for APIC profiles")),
+               help=_("Prefix for APIC domain/names/profiles created")),
 ]
 
 
@@ -48,9 +48,9 @@ apic_opts = [
     cfg.StrOpt('apic_name_mapping',
                default='use_name',
                help=_("Name mapping strategy to use: use_uuid | use_name")),
-    cfg.StrOpt('apic_system_id',
+    cfg.StrOpt('apic_domain_name',
                default='${apic_system_id}',
-               help=_("Name for the domain/prefix for APIC profiles")),
+               help=_("Name for the domain created on APIC")),
     cfg.StrOpt('apic_app_profile_name',
                default='${apic_system_id}_app',
                help=_("Name for the app profile used for Openstack")),

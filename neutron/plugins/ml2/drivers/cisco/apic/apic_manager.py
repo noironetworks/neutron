@@ -106,7 +106,7 @@ class APICManager(object):
             vlan_ns_name, vlan_min, vlan_max)
 
         # Create domain
-        phys_name = self.apic_config.apic_system_id
+        phys_name = self.apic_config.apic_domain_name
         self.ensure_phys_domain_created_on_apic(phys_name, vlan_ns)
 
         # Create entity profile
@@ -776,7 +776,7 @@ class APICManager(object):
         self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'static')
 
         # delete physdom profiles
-        phys_name = self.apic_config.apic_system_id
+        phys_name = self.apic_config.apic_domain_name
         self.apic.physDomP.delete(phys_name)
 
         # delete entity profile
