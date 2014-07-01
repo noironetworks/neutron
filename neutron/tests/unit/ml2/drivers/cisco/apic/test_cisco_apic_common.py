@@ -45,9 +45,8 @@ APIC_SUBJECT = 'testSubject'
 APIC_FILTER = 'carbonFilter'
 APIC_ENTRY = 'forcedEntry'
 
-APIC_VMMP = 'OpenStack'
+APIC_SYSTEM_ID = 'sysid'
 APIC_DOMAIN = 'cumuloNimbus'
-APIC_PDOM = 'rainStorm'
 
 APIC_NODE_PROF = 'red'
 APIC_LEAF = 'green'
@@ -184,6 +183,9 @@ class ConfigMixin(object):
         args = ['--config-file', test_api_v2.etcdir('neutron.conf.test')]
         neutron_config.parse(args=args)
 
+        # Configure global option apic_system_id
+        cfg.CONF.set_override('apic_system_id', APIC_SYSTEM_ID)
+
         # Configure the ML2 mechanism drivers and network types
         ml2_opts = {
             'mechanism_drivers': ['apic'],
@@ -206,7 +208,7 @@ class ConfigMixin(object):
             'apic_hosts': APIC_HOSTS,
             'apic_username': APIC_USR,
             'apic_password': APIC_PWD,
-            'apic_vmm_domain': APIC_DOMAIN,
+            'apic_system_id': APIC_SYSTEM_ID,
             'apic_vlan_ns_name': APIC_VLAN_NAME,
             'apic_vlan_range': '%d:%d' % (APIC_VLANID_FROM, APIC_VLANID_TO),
             'apic_node_profile': APIC_NODE_PROF,

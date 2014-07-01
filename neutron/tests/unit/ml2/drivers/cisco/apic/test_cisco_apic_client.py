@@ -215,7 +215,7 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
                                       code='103',
                                       text=u'Fake 103 error')
         self.assertRaises(cexc.ApicResponseNotOk,
-                          self.apic.vmmProvP.create, mocked.APIC_VMMP)
+                          self.apic.physDomP.create, mocked.APIC_DOMAIN)
 
     def test_create_mo_with_prereq(self):
         self._mock_authenticate()
@@ -229,10 +229,10 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
 
     def test_create_mo_prereq_exists(self):
         self._mock_authenticate()
-        self.mock_response_for_post('vmmDomP', name=mocked.APIC_DOMAIN)
-        self.mock_response_for_get('vmmDomP', name=mocked.APIC_DOMAIN)
-        self.apic.vmmDomP.create(mocked.APIC_VMMP, mocked.APIC_DOMAIN)
-        dom = self.apic.vmmDomP.get(mocked.APIC_VMMP, mocked.APIC_DOMAIN)
+        self.mock_response_for_post('physDomP', name=mocked.APIC_DOMAIN)
+        self.mock_response_for_get('physDomP', name=mocked.APIC_DOMAIN)
+        self.apic.physDomP.create(mocked.APIC_DOMAIN)
+        dom = self.apic.physDomP.get(mocked.APIC_DOMAIN)
         self.assertEqual(dom['name'], mocked.APIC_DOMAIN)
 
     def test_create_mo_fails(self):

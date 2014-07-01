@@ -78,7 +78,6 @@ class APICManager(object):
         )
 
         self.port_profiles = {}
-        self.vmm_domain = None
         self.phys_domain = None
         self.vlan_ns = None
         self.node_profiles = {}
@@ -107,7 +106,7 @@ class APICManager(object):
             vlan_ns_name, vlan_min, vlan_max)
 
         # Create domain
-        phys_name = self.apic_config.apic_vmm_domain
+        phys_name = self.apic_config.apic_system_id
         self.ensure_phys_domain_created_on_apic(phys_name, vlan_ns)
 
         # Create entity profile
@@ -161,12 +160,11 @@ class APICManager(object):
                     self.apic.fvnsVlanInstP.delete(*ns_args)
 
     def ensure_phys_domain_created_on_apic(self, phys_name,
-                                           vlan_ns=None):
-        """Create Virtual Machine Manager domain.
+                                           vlan_ns=None, vxlan_ns=None):
+        """Create physical domain.
 
-        Creates the VMM domain on the APIC and adds a VLAN or VXLAN
-        namespace to that VMM domain.
-        TODO (asomya): Add VXLAN support
+        Creates the physical domain on the APIC and adds a VLAN or VXLAN
+        namespace to that physical domain.
         """
         if self.clear_node_profiles:
             self.apic.physDomP.delete(phys_name)
@@ -183,34 +181,6 @@ class APICManager(object):
                 with excutils.save_and_reraise_exception():
                     # Delete the physical domain
                     self.apic.physDomP.delete(phys_name)
-
-    def ensure_vmm_domain_created_on_apic(self, vmm_name,
-                                          vlan_ns=None, vxlan_ns=None):
-        """Create Virtual Machine Manager domain.
-
-        Creates the VMM domain on the APIC and adds a VLAN or VXLAN
-        namespace to that VMM domain.
-        TODO (asomya): Add VXLAN support
-        """
-        provider = 'VMware'
-        if self.clear_node_profiles:
-            self.apic.vmmDomP.delete(provider, vmm_name)
-        self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
-        if not self.vmm_domain:
-            try:
-                self.apic.vmmDomP.create(provider, vmm_name)
-                if vlan_ns:
-                    vlan_ns_dn = vlan_ns[DN_KEY]
-                    # Note(mandeep):
-                    # If we change back to vmm domain, need to revert to
-                    # self.apic.infraRsVlanNs.create(
-                    #     provider, vmm_name, tDn=vlan_ns_dn)
-                    self.apic.infraRsVlanNs.create(vmm_name, tDn=vlan_ns_dn)
-                self.vmm_domain = self.apic.vmmDomP.get(provider, vmm_name)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the VMM domain
-                    self.apic.vmmDomP.delete(provider, vmm_name)
 
     def ensure_entity_profile_created_on_apic(self, name):
         """Create the infrastructure entity profile."""
@@ -805,12 +775,9 @@ class APICManager(object):
         self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'dynamic')
         self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'static')
 
-        # delete physdom profiles (and later vmmdom as well)
-        phys_name = self.apic_config.apic_vmm_domain
+        # delete physdom profiles
+        phys_name = self.apic_config.apic_system_id
         self.apic.physDomP.delete(phys_name)
-        # vmm_name = phys_name
-        # provider = 'VMware'
-        # self.apic.vmmDomP.delete(provider, vmm_name)
 
         # delete entity profile
         ent_name = self.apic_config.apic_entity_profile

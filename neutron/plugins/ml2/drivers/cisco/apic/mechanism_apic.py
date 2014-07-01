@@ -38,6 +38,8 @@ class APICMechanismDriver(api.MechanismDriver):
 
     @staticmethod
     def get_apic_manager():
+        cfg.CONF.set_override('apic_system_id',
+                              cfg.CONF.apic_system_id, 'ml2_cisco_apic')
         apic_config = cfg.CONF.ml2_cisco_apic
         network_config = {
             'vlan_ranges': cfg.CONF.ml2_type_vlan.network_vlan_ranges,

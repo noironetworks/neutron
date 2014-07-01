@@ -34,6 +34,7 @@ APIC_CODE_FORBIDDEN = str(requests.codes.forbidden)
 FALLBACK_EXCEPTIONS = (rexc.ConnectionError, rexc.Timeout,
                        rexc.TooManyRedirects, rexc.InvalidURL)
 
+
 # Info about a Managed Object's relative name (RN) and container.
 class ManagedObjectName(namedtuple('MoPath',
                                    ['container', 'rn_fmt', 'can_create'])):
@@ -101,10 +102,6 @@ class ManagedObjectClass(object):
         'fvRsProv__Ext': ManagedObjectName('l3extInstP', 'rsprov-%s'),
         'fvCollectionCont': ManagedObjectName('fvRsCons', 'collectionDn-[%s]'),
         'l3extSubnet': ManagedObjectName('l3extInstP', 'extsubnet-[%s]'),
-
-        'vmmProvP': ManagedObjectName(None, 'vmmp-%s', False),
-        'vmmDomP': ManagedObjectName('vmmProvP', 'dom-%s'),
-        'vmmEpPD': ManagedObjectName('vmmDomP', 'eppd-[%s]'),
 
         'physDomP': ManagedObjectName(None, 'phys-%s'),
 

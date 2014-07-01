@@ -137,12 +137,12 @@ class TestCiscoApicManager(base.BaseTestCase,
                           new_switch)
         self.assert_responses_drained()
 
-    def test_ensure_vmm_domain_created_old(self):
+    def test_ensure_phys_domain_created_old(self):
         dom = mocked.APIC_DOMAIN
-        self.mock_response_for_get('vmmDomP', name=dom)
-        self.mgr.ensure_vmm_domain_created_on_apic(dom)
+        self.mock_response_for_get('physDomP', name=dom)
+        self.mgr.ensure_phys_domain_created_on_apic(dom)
         self.assert_responses_drained()
-        old_dom = self.mgr.vmm_domain['name']
+        old_dom = self.mgr.phys_domain['name']
         self.assertEqual(old_dom, dom)
 
     def _mock_phys_dom_responses(self, dom, seg_type=None):
@@ -152,48 +152,40 @@ class TestCiscoApicManager(base.BaseTestCase,
             self.mock_responses_for_create(seg_type)
         self.mock_response_for_get('physDomP', name=dom, dn=dn)
 
-    def _mock_new_dom_responses(self, dom, seg_type=None):
-        vmm = mocked.APIC_VMMP
-        dn = self.mgr.apic.vmmDomP.mo.dn(vmm, dom)
-        self.mock_responses_for_create_if_not_exists('vmmDomP')
-        if seg_type:
-            self.mock_responses_for_create(seg_type)
-        self.mock_response_for_get('vmmDomP', name=dom, dn=dn)
-
-    def test_ensure_vmm_domain_created_new_no_vlan_ns(self):
+    def test_ensure_phys_domain_created_new_no_vlan_ns(self):
         dom = mocked.APIC_DOMAIN
-        self._mock_new_dom_responses(dom)
-        self.mgr.ensure_vmm_domain_created_on_apic(dom)
+        self._mock_phys_dom_responses(dom)
+        self.mgr.ensure_phys_domain_created_on_apic(dom)
         self.assert_responses_drained()
-        new_dom = self.mgr.vmm_domain['name']
+        new_dom = self.mgr.phys_domain['name']
         self.assertEqual(new_dom, dom)
 
-    def test_ensure_vmm_domain_created_new_no_vlan_ns_exc(self):
+    def test_ensure_phys_domain_created_new_no_vlan_ns_exc(self):
         dom = mocked.APIC_DOMAIN
-        self.mock_response_for_get('vmmDomP')
+        self.mock_response_for_get('physDomP')
         self.mock_error_post_response(wexc.HTTPBadRequest)
-        self.mock_response_for_post('vmmDomP')
+        self.mock_response_for_post('physDomP')
         self.assertRaises(cexc.ApicResponseNotOk,
-                          self.mgr.ensure_vmm_domain_created_on_apic, dom)
+                          self.mgr.ensure_phys_domain_created_on_apic, dom)
         self.assert_responses_drained()
 
-    def test_ensure_vmm_domain_created_new_with_vlan_ns(self):
+    def test_ensure_phys_domain_created_new_with_vlan_ns(self):
         dom = mocked.APIC_DOMAIN
-        self._mock_new_dom_responses(dom, seg_type='infraRsVlanNs')
+        self._mock_phys_dom_responses(dom, seg_type='infraRsVlanNs')
         ns = {'dn': 'test_vlan_ns'}
-        self.mgr.ensure_vmm_domain_created_on_apic(dom, vlan_ns=ns)
+        self.mgr.ensure_phys_domain_created_on_apic(dom, vlan_ns=ns)
         self.assert_responses_drained()
-        new_dom = self.mgr.vmm_domain['name']
+        new_dom = self.mgr.phys_domain['name']
         self.assertEqual(new_dom, dom)
 
-    def test_ensure_vmm_domain_created_new_with_vxlan_ns(self):
+    def test_ensure_phys_domain_created_new_with_vxlan_ns(self):
         dom = mocked.APIC_DOMAIN
         # TODO(Henry): mock seg_type vxlan when vxlan is ready
-        self._mock_new_dom_responses(dom, seg_type=None)
+        self._mock_phys_dom_responses(dom, seg_type=None)
         ns = {'dn': 'test_vxlan_ns'}
-        self.mgr.ensure_vmm_domain_created_on_apic(dom, vxlan_ns=ns)
+        self.mgr.ensure_phys_domain_created_on_apic(dom, vxlan_ns=ns)
         self.assert_responses_drained()
-        new_dom = self.mgr.vmm_domain['name']
+        new_dom = self.mgr.phys_domain['name']
         self.assertEqual(new_dom, dom)
 
     def _infra_created_setup(self):
@@ -332,10 +324,6 @@ class TestCiscoApicManager(base.BaseTestCase,
         self.mgr.ensure_context_unenforced(
             mocked.APIC_TENANT, mocked.APIC_L3CTX)
         self.assert_responses_drained()
-
-    def _mock_vmm_dom_prereq(self, dom):
-        self._mock_vmm_dom_responses(dom)
-        self.mgr.ensure_vmm_domain_created_on_apic(dom)
 
     def _mock_phys_dom_prereq(self, dom):
         self._mock_phys_dom_responses(dom)

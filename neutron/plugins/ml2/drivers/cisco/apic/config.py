@@ -22,6 +22,18 @@ DEFAULT_ROOT_HELPER = \
     'sudo /usr/local/bin/neutron-rootwrap /etc/neutron/rootwrap.conf'
 
 
+# oslo.config limits ${var} expansion to global variables
+# So, for now, we have apic_system_id as a global/DEFAULT variable
+global_opts = [
+    cfg.StrOpt('apic_system_id',
+               default='openstack',
+               help=_("Name for the domain/prefix for APIC profiles")),
+]
+
+
+cfg.CONF.register_opts(global_opts)
+
+
 apic_opts = [
     cfg.ListOpt('apic_hosts',
                 default=[],
@@ -36,39 +48,45 @@ apic_opts = [
     cfg.StrOpt('apic_name_mapping',
                default='use_name',
                help=_("Name mapping strategy to use: use_uuid | use_name")),
-    cfg.StrOpt('apic_vmm_provider',
-               default='VMware',
-               help=_("Name for the VMM domain provider")),
-    cfg.StrOpt('apic_vmm_domain',
-               default='openstack',
-               help=_("Name for the VMM domain to be created for Openstack")),
+    cfg.StrOpt('apic_system_id',
+               default='${apic_system_id}',
+               help=_("Name for the domain/prefix for APIC profiles")),
     cfg.StrOpt('apic_app_profile_name',
-               default='openstack_app',
+               default='${apic_system_id}_app',
                help=_("Name for the app profile used for Openstack")),
     cfg.StrOpt('apic_vlan_ns_name',
-               default='openstack_ns',
+               default='${apic_system_id}_vlan_ns',
                help=_("Name for the vlan namespace to be used for Openstack")),
+    cfg.StrOpt('apic_node_profile',
+               default='${apic_system_id}_node_profile',
+               help=_("Name of the node profile to be created")),
+    cfg.StrOpt('apic_entity_profile',
+               default='${apic_system_id}_entity_profile',
+               help=_("Name of the entity profile to be created")),
+    cfg.StrOpt('apic_function_profile',
+               default='${apic_system_id}_function_profile',
+               help=_("Name of the function profile to be created")),
+    cfg.StrOpt('apic_lacp_profile',
+               default='${apic_system_id}_lacp_profile',
+               help=_("Name of the lacp profile to be created")),
+    cfg.ListOpt('apic_host_uplink_ports',
+                default=[],
+                help=_('The uplink ports to check for ACI connectivity')),
+    cfg.ListOpt('apic_vpc_pairs',
+                default=[],
+                help=_('The switch pairs for VPC connectivity')),
     cfg.StrOpt('apic_vlan_range',
                default='2:4093',
                help=_("Range of VLAN's to be used for Openstack")),
-    cfg.StrOpt('apic_node_profile',
-               default='openstack_profile',
-               help=_("Name of the node profile to be created")),
-    cfg.StrOpt('apic_entity_profile',
-               default='openstack_entity',
-               help=_("Name of the entity profile to be created")),
-    cfg.StrOpt('apic_function_profile',
-               default='openstack_function',
-               help=_("Name of the function profile to be created")),
     cfg.FloatOpt('apic_agent_report_interval',
                  default=30,
                  help=_('Interval between agent status updates (in sec)')),
     cfg.FloatOpt('apic_agent_poll_interval',
                  default=2,
                  help=_('Interval between agent poll for topology (in sec)')),
-    cfg.ListOpt('apic_host_uplink_ports',
-                default=[],
-                help=_('The uplink ports to check for ACI connectivity')),
+    cfg.StrOpt('root_helper',
+               default=DEFAULT_ROOT_HELPER,
+               help=_("Setup root helper as rootwrap or sudo")),
     cfg.BoolOpt('apic_clear_node_profiles',
                 default=False,
                 help=_("Clear the node profiles on APIC at startup "
@@ -77,9 +95,6 @@ apic_opts = [
                 default=False,
                 help=_("Clear the apic specific db tables at startup "
                        "(for testing)")),
-    cfg.StrOpt('root_helper',
-               default=DEFAULT_ROOT_HELPER,
-               help=_("Setup root helper as rootwrap or sudo")),
 ]
 
 
