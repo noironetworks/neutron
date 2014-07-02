@@ -516,8 +516,10 @@ class APICManager(object):
         cuuid = uuid.uuid4() if not contract else contract.contract_id
         try:
             # Create contract
+            scope = SCOPE_GLOBAL if owner == TENANT_COMMON else SCOPE_TENANT
             self._create_if_not_exist(self.apic.vzBrCP, owner, cuuid,
-                                      scope=SCOPE_TENANT)
+                                      scope=scope)
+
             # Create subject
             self._create_if_not_exist(self.apic.vzSubj, owner, cuuid,
                                       suuid)
@@ -649,6 +651,7 @@ class APICManager(object):
         # update corresponding BD's ctx to this router ctx
         bd_id = network_id
         self.apic.fvRsCtx.update(tenant_id, bd_id, tnFvCtxName=context)
+
         # set the EPG to provide this contract
         if not self.get_prov_contract_for_epg(tenant_id, epg.epg_id,
                                               contract.contract_id):
