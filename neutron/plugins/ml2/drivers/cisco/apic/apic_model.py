@@ -25,35 +25,9 @@ from neutron.plugins.ml2 import models as models_ml2
 from neutron.openstack.common import lockutils
 
 
-class NetworkEPG(model_base.BASEV2):
-
-    """EPG's created on the apic per network."""
-
-    __tablename__ = 'cisco_ml2_apic_epgs'
-
-    network_id = sa.Column(sa.String(255), nullable=False, primary_key=True)
-    epg_id = sa.Column(sa.String(64), nullable=False)
-    segmentation_id = sa.Column(sa.String(64), nullable=False)
-    provider = sa.Column(sa.Boolean, default=False, nullable=False)
-
-
-class PortProfile(model_base.BASEV2):
-
-    """Port profiles created on the APIC."""
-
-    __tablename__ = 'cisco_ml2_apic_port_profiles'
-
-    node_id = sa.Column(sa.String(255), nullable=False, primary_key=True)
-    profile_id = sa.Column(sa.String(64), nullable=False)
-    hpselc_id = sa.Column(sa.String(64), nullable=False)
-    module = sa.Column(sa.String(10), nullable=False)
-    from_port = sa.Column(sa.Integer(), nullable=False)
-    to_port = sa.Column(sa.Integer(), nullable=False)
-
-
 class RouterContract(model_base.BASEV2, models_v2.HasTenant):
 
-    """Contracts (and Filters) created on the APIC.
+    """Contracts created on the APIC.
 
     tenant_id represents the owner (APIC side) of the contract.
     router_id is the UUID of the router (Neutron side) this contract is
@@ -63,8 +37,6 @@ class RouterContract(model_base.BASEV2, models_v2.HasTenant):
     __tablename__ = 'cisco_ml2_apic_contracts'
 
     router_id = sa.Column(sa.String(64), nullable=False, primary_key=True)
-    contract_id = sa.Column(sa.String(64), nullable=False)
-    filter_id = sa.Column(sa.String(64), nullable=False)
 
 
 class HostLink(model_base.BASEV2):
@@ -92,16 +64,6 @@ class ApicName(model_base.BASEV2):
     apic_name = sa.Column(sa.String(255), nullable=False)
 
 
-class ApicKey(model_base.BASEV2):
-
-    """Persistent config on APIC that needs to be in sync with driver."""
-
-    __tablename__ = 'cisco_ml2_apic_keymap'
-
-    key = sa.Column(sa.String(255), nullable=False, primary_key=True)
-    value = sa.Column(sa.String(255), nullable=False)
-
-
 class ApicDbModel(object):
 
     """DB Model to manage all APIC DB interactions."""
@@ -109,134 +71,47 @@ class ApicDbModel(object):
     def __init__(self):
         self.session = db_api.get_session()
 
-    def get_port_profile_for_node(self, node_id):
-        """Returns a port profile for a switch if found in the DB."""
-        return self.session.query(PortProfile).filter_by(
-            node_id=node_id).first()
-
-    def get_profile_for_module_and_ports(self, node_id, profile_id,
-                                         module, from_port, to_port):
-        """Returns profile for module and ports.
-
-        Grabs the profile row from the DB for the specified switch,
-        module (linecard) and from/to port combination.
-        """
-        return self.session.query(PortProfile).filter_by(
-            node_id=node_id,
-            module=module,
-            profile_id=profile_id,
-            from_port=from_port,
-            to_port=to_port).first()
-
-    def get_profile_for_module(self, node_id, profile_id, module):
-        """Returns the first profile for a switch module from the DB."""
-        return self.session.query(PortProfile).filter_by(
-            node_id=node_id,
-            profile_id=profile_id,
-            module=module).first()
-
-    def get_nodes_with_port_profile(self):
-        return self.session.query(PortProfile.node_id).distinct()
-
-    def add_profile_for_module_and_ports(self, node_id, profile_id,
-                                         hpselc_id, module,
-                                         from_port, to_port):
-        """Adds a profile for switch, module and port range."""
-        row = PortProfile(node_id=node_id, profile_id=profile_id,
-                          hpselc_id=hpselc_id, module=module,
-                          from_port=from_port, to_port=to_port)
-        self.session.add(row)
-        self._flush()
-
-    def get_provider_contract(self):
-        """Returns  provider EPG from the DB if found."""
-        return self.session.query(NetworkEPG).filter_by(
-            provider=True).first()
-
-    def set_provider_contract(self, epg_id):
-        """Sets an EPG to be a contract provider."""
-        epg = self.session.query(NetworkEPG).filter_by(
-            epg_id=epg_id).first()
-        if epg:
-            epg.provider = True
-            self.session.merge(epg)
-            self._flush()
-
-    def unset_provider_contract(self, epg_id):
-        """Sets an EPG to be a contract consumer."""
-        epg = self.session.query(NetworkEPG).filter_by(
-            epg_id=epg_id).first()
-        if epg:
-            epg.provider = False
-            self.session.merge(epg)
-            self._flush()
-
-    def get_an_epg(self, exception):
-        """Returns an EPG from the DB that does not match the id specified."""
-        return self.session.query(NetworkEPG).filter(
-            NetworkEPG.epg_id != exception).first()
-
-    def get_epg_for_network(self, network_id):
-        """Returns an EPG for a give neutron network."""
-        return self.session.query(NetworkEPG).filter_by(
-            network_id=network_id).first()
-
-    def write_epg_for_network(self, network_id, epg_uid, segmentation_id='1'):
-        """Stores EPG details for a network.
-
-        NOTE: Segmentation_id is just a placeholder currently, it will be
-              populated with a proper segment id once segmentation mgmt is
-              moved to the APIC.
-        """
-        epg = NetworkEPG(network_id=network_id, epg_id=epg_uid,
-                         segmentation_id=segmentation_id)
-        self.session.add(epg)
-        self._flush()
-        return epg
-
-    def delete_epg(self, epg):
-        """Deletes an EPG from the DB."""
-        self.session.delete(epg)
-        self._flush()
-
     def get_contract_for_router(self, router_id):
         """Returns the specified router's contract."""
         return self.session.query(RouterContract).filter_by(
             router_id=router_id).first()
 
-    def write_contract_for_router(self, tenant_id, router_id,
-                                  contract_id, filter_id):
+    def write_contract_for_router(self, tenant_id, router_id):
         """Stores a new contract for the given tenant."""
         contract = RouterContract(tenant_id=tenant_id,
-                                  router_id=router_id,
-                                  contract_id=contract_id,
-                                  filter_id=filter_id)
-        self.session.add(contract)
-        self._flush()
-
+                                  router_id=router_id)
+        with self.session.begin(subtransactions=True):
+            self.session.add(contract)
+            self._flush()
         return contract
+
+    def update_contract_for_router(self, tenant_id, router_id):
+        """Stores a new contract for the given tenant."""
+        with self.session.begin(subtransactions=True):
+            contract = self.session.query(RouterContract).filter_by(
+                router_id=router_id).first()
+            if contract:
+                contract.tenant_id = tenant_id
+                self.session.merge(contract)
+                self._flush()
+            else:
+                self.write_contract_for_router(tenant_id, router_id)
 
     def delete_contract_for_router(self, router_id):
         """Stores a new contract for the given tenant."""
-        contract = self.session.query(RouterContract).filter_by(
-            router_id=router_id).first()
-        if contract:
-            self.session.delete(contract)
-            self._flush()
-
-    def delete_profile_for_node(self, node_id):
-        """Deletes the port profile for a node."""
-        profile = self.session.query(PortProfile).filter_by(
-            node_id=node_id).first()
-        if profile:
-            self.session.delete(profile)
-            self._flush()
+        with self.session.begin(subtransactions=True):
+            contract = self.session.query(RouterContract).filter_by(
+                router_id=router_id).first()
+            if contract:
+                self.session.delete(contract)
+                self._flush()
 
     def add_hostlink(self, host, ifname, ifmac, swid, module, port):
         row = HostLink(host=host, ifname=ifname, ifmac=ifmac,
                        swid=swid, module=module, port=port)
-        self.session.merge(row)
-        self._flush()
+        with self.session.begin(subtransactions=True):
+            self.session.merge(row)
+            self._flush()
 
     def get_hostlinks(self):
         return self.session.query(HostLink).all()
@@ -254,11 +129,12 @@ class ApicDbModel(object):
             host=host, swid=swid, module=module, port=port).all()
 
     def delete_hostlink(self, host, ifname):
-        profile = self.session.query(HostLink).filter_by(
-            host=host, ifname=ifname).first()
-        if profile:
-            self.session.delete(profile)
-            self._flush()
+        with self.session.begin(subtransactions=True):
+            profile = self.session.query(HostLink).filter_by(
+                host=host, ifname=ifname).first()
+            if profile:
+                self.session.delete(profile)
+                self._flush()
 
     def get_switches(self):
         return self.session.query(HostLink.swid).distinct()
@@ -289,8 +165,20 @@ class ApicDbModel(object):
         row = ApicName(neutron_id=neutron_id,
                        neutron_type=neutron_type,
                        apic_name=apic_name)
-        self.session.add(row)
-        self._flush()
+        with self.session.begin(subtransactions=True):
+            self.session.add(row)
+            self._flush()
+
+    def update_apic_name(self, neutron_id, neutron_type, apic_name):
+        with self.session.begin(subtransactions=True):
+            name = self.session.query(ApicName).filter_by(
+                neutron_id=neutron_id, neutron_type=neutron_type).first()
+            if name:
+                name.apic_name = apic_name
+                self.session.merge(name)
+                self._flush()
+            else:
+                self.add_apic_name(neutron_id, neutron_type, apic_name)
 
     def get_apic_names(self):
         return self.session.query(ApicName).all()
@@ -299,38 +187,19 @@ class ApicDbModel(object):
         return self.session.query(ApicName.apic_name).filter_by(
             neutron_id=neutron_id, neutron_type=neutron_type).first()
 
-    def delete_apic_name(self, neutron_id, neutron_type):
-        profile = self.session.query(ApicName).filter_by(
-            neutron_id=neutron_id, neutron_type=neutron_type).first()
-        if profile:
-            self.session.delete(profile)
-            self._flush()
-
-    def add_apic_config(self, key, value):
-        row = ApicKey(key=key, value=value)
-        self.session.add(row)
-        self._flush()
-
-    def get_apic_configs(self):
-        return self.session.query(ApicKey).all()
-
-    def get_apic_config(self, key):
-        return self.session.query(ApicKey).filter_by(key=key).first()
-
-    def delete_apic_config(self, key):
-        profile = self.session.query(ApicKey).filter_by(key=key).first()
-        if profile:
-            self.session.delete(profile)
-            self._flush()
+    def delete_apic_name(self, neutron_id):
+        with self.session.begin(subtransactions=True):
+            profile = self.session.query(ApicName).filter_by(
+                neutron_id=neutron_id).first()
+            if profile:
+                self.session.delete(profile)
+                self._flush()
 
     @lockutils.synchronized('apic_manager_flush')
     def clean(self):
-        self.session.query(NetworkEPG).delete()
-        self.session.query(PortProfile).delete()
         self.session.query(RouterContract).delete()
         self.session.query(HostLink).delete()
         self.session.query(ApicName).delete()
-        self.session.query(ApicKey).delete()
         self.session.flush()
 
     @lockutils.synchronized('apic_manager_flush')

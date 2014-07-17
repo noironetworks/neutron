@@ -95,6 +95,9 @@ apic_opts = [
                 default=False,
                 help=_("Clear the apic specific db tables at startup "
                        "(for testing)")),
+    cfg.IntOpt('apic_sync_interval',
+               default=0,
+               help=_("Synchronization interval in seconds")),
 ]
 
 

@@ -17,6 +17,7 @@
 
 from collections import deque
 from collections import namedtuple
+import contextlib
 import time
 
 import json
@@ -24,6 +25,7 @@ import requests
 import requests.exceptions as rexc
 
 from neutron.openstack.common import log as logging
+from neutron.plugins.ml2.drivers.cisco.apic.apic_mapper import ApicName
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
 
 
@@ -37,10 +39,11 @@ FALLBACK_EXCEPTIONS = (rexc.ConnectionError, rexc.Timeout,
 
 # Info about a Managed Object's relative name (RN) and container.
 class ManagedObjectName(namedtuple('MoPath',
-                                   ['container', 'rn_fmt', 'can_create'])):
-    def __new__(cls, container, rn_fmt, can_create=True):
+                                   ['container', 'rn_fmt', 'can_create',
+                                    'name_fmt'])):
+    def __new__(cls, container, rn_fmt, can_create=True, name_fmt=None):
         return super(ManagedObjectName, cls).__new__(cls, container, rn_fmt,
-                                                     can_create)
+                                                     can_create, name_fmt)
 
 
 class ManagedObjectClass(object):
@@ -55,13 +58,14 @@ class ManagedObjectClass(object):
     Also keeps track of whether the MO can be created in the APIC, as some
     MOs are read-only or used for specifying relationships.
     """
-
+    scope = ''
     supported_mos = {
-        'fvTenant': ManagedObjectName(None, 'tn-%s'),
-        'fvBD': ManagedObjectName('fvTenant', 'BD-%s'),
+        'fvTenant': ManagedObjectName(None, 'tn-%(name)s', name_fmt='__%s'),
+        'fvBD': ManagedObjectName('fvTenant', 'BD-%(name)s', name_fmt='%s'),
         'fvRsBd': ManagedObjectName('fvAEPg', 'rsbd'),
         'fvSubnet': ManagedObjectName('fvBD', 'subnet-[%s]'),
-        'fvCtx': ManagedObjectName('fvTenant', 'ctx-%s'),
+        'fvCtx': ManagedObjectName('fvTenant', 'ctx-%(name)s',
+                                   name_fmt='__%s'),
         'fvRsCtx': ManagedObjectName('fvBD', 'rsctx'),
         'fvAp': ManagedObjectName('fvTenant', 'ap-%s'),
         'fvAEPg': ManagedObjectName('fvAp', 'epg-%s'),
@@ -87,7 +91,8 @@ class ManagedObjectClass(object):
         'vzCPIf': ManagedObjectName('fvTenant', 'cif-%s'),
         'vzRsIf': ManagedObjectName('vzCPIf', 'rsif'),
 
-        'l3extOut': ManagedObjectName('fvTenant', 'out-%s'),
+        'l3extOut': ManagedObjectName('fvTenant', 'out-%(name)s',
+                                      name_fmt='__%s'),
         'l3extRsEctx': ManagedObjectName('l3extOut', 'rsectx'),
         'l3extLNodeP': ManagedObjectName('l3extOut', 'lnodep-%s'),
         'l3extRsNodeL3OutAtt': ManagedObjectName('l3extLNodeP',
@@ -97,7 +102,8 @@ class ManagedObjectClass(object):
         'l3extLIfP': ManagedObjectName('l3extLNodeP', 'lifp-%s'),
         'l3extRsPathL3OutAtt': ManagedObjectName('l3extLIfP',
                                                  'rspathL3OutAtt-[%s]'),
-        'l3extInstP': ManagedObjectName('l3extOut', 'instP-%s'),
+        'l3extInstP': ManagedObjectName('l3extOut', 'instP-%(name)s',
+                                        name_fmt='__%s'),
         'fvRsCons__Ext': ManagedObjectName('l3extInstP', 'rscons-%s'),
         'fvRsProv__Ext': ManagedObjectName('l3extInstP', 'rsprov-%s'),
         'fvCollectionCont': ManagedObjectName('fvRsCons', 'collectionDn-[%s]'),
@@ -105,42 +111,47 @@ class ManagedObjectClass(object):
 
         'physDomP': ManagedObjectName(None, 'phys-%s'),
 
-        'infra': ManagedObjectName(None, 'infra'),
-        'infraNodeP': ManagedObjectName('infra', 'nprof-%s'),
+        'infraInfra': ManagedObjectName(None, 'infra'),
+        'infraNodeP': ManagedObjectName('infraInfra', 'nprof-%(name)s',
+                                        name_fmt='__%s'),
         'infraLeafS': ManagedObjectName('infraNodeP', 'leaves-%s-typ-%s'),
         'infraNodeBlk': ManagedObjectName('infraLeafS', 'nodeblk-%s'),
         'infraRsAccPortP': ManagedObjectName('infraNodeP', 'rsaccPortP-[%s]'),
-        'infraAccPortP': ManagedObjectName('infra', 'accportprof-%s'),
+        'infraAccPortP': ManagedObjectName('infraInfra',
+                                           'accportprof-%(name)s',
+                                           name_fmt='__%s'),
         'infraHPortS': ManagedObjectName('infraAccPortP', 'hports-%s-typ-%s'),
         'infraPortBlk': ManagedObjectName('infraHPortS', 'portblk-%s'),
         'infraRsAccBaseGrp': ManagedObjectName('infraHPortS', 'rsaccBaseGrp'),
-        'infraFuncP': ManagedObjectName('infra', 'funcprof'),
+        'infraFuncP': ManagedObjectName('infraInfra', 'funcprof'),
         'infraAccPortGrp': ManagedObjectName('infraFuncP', 'accportgrp-%s'),
         'infraRsAttEntP': ManagedObjectName('infraAccPortGrp', 'rsattEntP'),
-        'infraAttEntityP': ManagedObjectName('infra', 'attentp-%s'),
+        'infraAttEntityP': ManagedObjectName('infraInfra', 'attentp-%(name)s',
+                                             name_fmt='__%s'),
         'infraRsDomP': ManagedObjectName('infraAttEntityP', 'rsdomP-[%s]'),
         'infraRsVlanNs': ManagedObjectName('physDomP', 'rsvlanNs'),
 
-        'fvnsVlanInstP': ManagedObjectName('infra', 'vlanns-%s-%s'),
+        'fvnsVlanInstP': ManagedObjectName('infraInfra', 'vlanns-%s-%s'),
         'fvnsEncapBlk__vlan': ManagedObjectName('fvnsVlanInstP',
                                                 'from-%s-to-%s'),
-        'fvnsVxlanInstP': ManagedObjectName('infra', 'vxlanns-%s'),
+        'fvnsVxlanInstP': ManagedObjectName('infraInfra', 'vxlanns-%s'),
         'fvnsEncapBlk__vxlan': ManagedObjectName('fvnsVxlanInstP',
                                                  'from-%s-to-%s'),
 
         # Fabric
-        'fabric': ManagedObjectName(None, 'fabric', False),
-        'bgpInstPol': ManagedObjectName('fabric', 'bgpInstP-%s'),
+        'fabricInst': ManagedObjectName(None, 'fabric', False),
+        'bgpInstPol': ManagedObjectName('fabricInst', 'bgpInstP-%(name)s',
+                                        name_fmt='%s'),
         'bgpRRP': ManagedObjectName('bgpInstPol', 'rr'),
         'bgpRRNodePEp': ManagedObjectName('bgpRRP', 'node-%s'),
         'bgpAsP': ManagedObjectName('bgpInstPol', 'as'),
 
-        'funcprof': ManagedObjectName('fabric', 'funcprof', False),
-        'fabricPodPGrp': ManagedObjectName('funcprof', 'podpgrp-%s'),
+        'fabricFuncP': ManagedObjectName('fabricInst', 'funcprof', False),
+        'fabricPodPGrp': ManagedObjectName('fabricFuncP', 'podpgrp-%s'),
         'fabricRsPodPGrpBGPRRP': ManagedObjectName('fabricPodPGrp',
                                                    'rspodPGrpBGPRRP'),
 
-        'fabricPodP': ManagedObjectName('fabric', 'podprof-default'),
+        'fabricPodP': ManagedObjectName('fabricInst', 'podprof-default'),
         'fabricPodS__ALL': ManagedObjectName('fabricPodP', 'pods-%s-typ-ALL'),
         'fabricRsPodPGrp': ManagedObjectName('fabricPodS__ALL', 'rspodPGrp'),
 
@@ -151,6 +162,12 @@ class ManagedObjectClass(object):
         'fabricPathEp': ManagedObjectName('fabricPathEpCont', 'pathep-%s',
                                           False),
         'fabricNode': ManagedObjectName('fabricPod', 'node-%s', False),
+    }
+
+    # The ManagedObject classes specified below will not be scoped whenever
+    # The input parameters match the specified argument
+    scope_exceptions = {
+        'fvTenant': [('common',)],
     }
 
     # Note(Henry): The use of a mutable default argument _inst_cache is
@@ -171,11 +188,15 @@ class ManagedObjectClass(object):
         self.klass_name = mo_class.split('__')[0]
         mo = self.supported_mos[mo_class]
         self.container = mo.container
-        self.rn_fmt = mo.rn_fmt
+        if mo.name_fmt:
+            self.rn_fmt = mo.rn_fmt % {'name': mo.name_fmt}
+            self.name_fmt = mo.name_fmt
+        else:
+            self.rn_fmt = self.name_fmt = mo.rn_fmt
         self.dn_fmt, self.params = self._dn_fmt()
-        self.param_count = self.dn_fmt.count('%s')
-        rn_has_param = self.rn_fmt.count('%s')
-        self.can_create = rn_has_param and mo.can_create
+        self.dn_param_count = self.dn_fmt.count('%s')
+        self.rn_param_count = self.rn_fmt.count('%s')
+        self.can_create = self.rn_param_count and mo.can_create
 
     def _dn_fmt(self):
         """Build the distinguished name format using container and RN.
@@ -185,7 +206,7 @@ class ManagedObjectClass(object):
         Also make a list of the required parameters.
         Note: Call this method only once at init.
         """
-        param = [self.klass] if '%s' in self.rn_fmt else []
+        param = [self]
         if self.container:
             container = ManagedObjectClass(self.container)
             dn_fmt = '%s/%s' % (container.dn_fmt, self.rn_fmt)
@@ -193,9 +214,27 @@ class ManagedObjectClass(object):
             return dn_fmt, params
         return 'uni/%s' % self.rn_fmt, param
 
+    def _scope(self, fmt, *params):
+        exc = ManagedObjectClass.scope_exceptions.get(self.klass)
+        res = fmt.replace(
+            '__', '' if exc and params in exc else ManagedObjectClass.scope)
+        return res % params
+
     def dn(self, *params):
         """Return the distinguished name for a managed object."""
-        return self.dn_fmt % params
+        dn = ['uni']
+        for part in self.params:
+            dn.append(part.rn(*params[:part.rn_param_count]))
+            params = params[part.rn_param_count:]
+        return '/'.join(dn)
+
+    def rn(self, *params):
+        """Return the distinguished name for a managed object."""
+        return self._scope(self.rn_fmt, *params)
+
+    def name(self, *params):
+        """Return the name for a managed object."""
+        return self._scope(self.name_fmt, *params)
 
 
 class ApicSession(object):
@@ -218,22 +257,22 @@ class ApicSession(object):
         if usr and pwd:
             self.login(usr, pwd)
 
-    def _do_request(self, request, url, *args, **kwargs):
-        """Use this method to wrap all the http requests"""
+    def _do_request(self, request, url, **kwargs):
+        """Use this method to wrap all the http requests."""
         for _ in range(len(self.api_base)):
             try:
-                return request(self.api_base[0] + url, *args, **kwargs)
+                return request(self.api_base[0] + url, **kwargs)
             except FALLBACK_EXCEPTIONS as ex:
                 LOG.debug('%s, falling back to a '
                           'new address' % ex.message)
                 self.api_base.rotate(-1)
                 LOG.debug('New controller address: %s ' % self.api_base[0])
-        return request(self.api_base[0] + url, *args, **kwargs)
+        return request(self.api_base[0] + url, **kwargs)
 
     @staticmethod
     def _make_data(key, **attrs):
         """Build the body for a msg out of a key and some attributes."""
-        return json.dumps({key: {'attributes': attrs}})
+        return json.dumps({key: {'attributes': attrs}}, cls=ApicNameEncoder)
 
     def _api_url(self, api):
         """Create the URL for a generic API."""
@@ -282,10 +321,10 @@ class ApicSession(object):
             request_str = url
         else:
             request_str = '%s, data=%s' % (url, data)
-            LOG.debug(_("data = %s"), data)
+            LOG.debug(("data = %s"), data)
         # imdata is where the APIC returns the useful information
         imdata = response.json().get('imdata')
-        LOG.debug(_("Response: %s"), imdata)
+        LOG.debug(("Response: %s"), imdata)
         if response.status_code != requests.codes.ok:
             try:
                 err_code = imdata[0]['error']['attributes']['code']
@@ -335,12 +374,23 @@ class ApicSession(object):
         url = self._api_url(request)
         return self._send(self.session.post, url, data=data)
 
-    def post_mo(self, mo, *args, **data):
+    def post_mo(self, mo, *params, **data):
         """Post data for a managed object to the server."""
         self._check_session()
-        url = self._mo_url(mo, *args)
+        url = self._mo_url(mo, *params)
         data = self._make_data(mo.klass_name, **data)
         return self._send(self.session.post, url, data=data)
+
+    def post_body(self, mo, data, *params):
+        """Post mo with pre made body."""
+        self._check_session()
+        url = self._mo_url(mo, *params)
+        return self._send(self.session.post, url, data=data)
+
+    def delete_mo(self, mo, *params):
+        self._check_session()
+        url = self._mo_url(mo, *params)
+        return self._send(self.session.delete, url)
 
     # Session management
 
@@ -353,7 +403,7 @@ class ApicSession(object):
                 raise cexc.ApicResponseNoCookie(request=request)
             self.cookie = {'APIC-Cookie': attributes['token']}
             timeout = int(attributes['refreshTimeoutSeconds'])
-            LOG.debug(_("APIC session will expire in %d seconds"), timeout)
+            LOG.debug(("APIC session will expire in %d seconds"), timeout)
             # Give ourselves a few seconds to refresh before timing out
             self.session_timeout = timeout - 5
             self.session_deadline = time.time() + self.session_timeout
@@ -402,7 +452,7 @@ class ApicSession(object):
             if (err_code == APIC_CODE_FORBIDDEN and
                     err_text.lower().startswith('token was invalid')):
                 # This means the token timed out, so log in again.
-                LOG.debug(_("APIC session timed-out, logging in again."))
+                LOG.debug(("APIC session timed-out, logging in again."))
                 self.login()
             else:
                 self.authentication = None
@@ -430,25 +480,29 @@ class ManagedObjectAccess(object):
         self.session = session
         self.mo = ManagedObjectClass(mo_class)
 
-    def _create_container(self, *params):
-        """Recursively create all container objects."""
-        if self.mo.container:
-            container = ManagedObjectAccess(self.session, self.mo.container)
-            if container.mo.can_create:
-                container_params = params[0: container.mo.param_count]
-                container._create_container(*container_params)
-                container.session.post_mo(container.mo, *container_params)
-
-    def create(self, *params, **attrs):
-        self._create_container(*params)
-        if self.mo.can_create and 'status' not in attrs:
-            attrs['status'] = 'created'
-        return self.session.post_mo(self.mo, *params, **attrs)
-
     def _mo_attributes(self, obj_data):
         if (self.mo.klass_name in obj_data and
                 'attributes' in obj_data[self.mo.klass_name]):
             return obj_data[self.mo.klass_name]['attributes']
+
+    def create(self, *params, **data):
+        result = []
+        transaction = data.pop('transaction', None)
+        with self.session.transaction(transaction, result) as trs:
+            getattr(trs, self.mo.klass).add(*params, **data)
+        if result:
+            return result[0]
+
+    def update(self, *params, **data):
+        return self.create(*params, **data)
+
+    def delete(self, *params, **data):
+        result = []
+        transaction = data.pop('transaction', None)
+        with self.session.transaction(transaction, result) as trs:
+            getattr(trs, self.mo.klass).remove(*params)
+        if result:
+            return result[0]
 
     def get(self, *params):
         """Return a dict of the MO's attributes, or None."""
@@ -456,33 +510,172 @@ class ManagedObjectAccess(object):
         if imdata:
             return self._mo_attributes(imdata[0])
 
-    def get_subtree(self, *params, **kwargs):
-        return self.session.get_mo_subtree(self.mo, *params, **kwargs)
+    def get_subtree(self, *params, **data):
+        return self.session.get_mo_subtree(self.mo, *params, **data)
 
-    def list_all(self, **kwargs):
-        imdata = self.session.list_mo(self.mo, **kwargs)
+    def list_all(self, **data):
+        imdata = self.session.list_mo(self.mo, **data)
         return filter(None, [self._mo_attributes(obj) for obj in imdata])
 
-    def list_names(self, **kwargs):
-        return [obj['name'] for obj in self.list_all(**kwargs)]
+    def list_names(self, **data):
+        return [obj['name'] for obj in self.list_all(**data)]
 
-    def update(self, *params, **attrs):
-        return self.session.post_mo(self.mo, *params, **attrs)
+    def dn(self, *data):
+        return self.mo.dn(*data)
 
-    def delete(self, *params):
-        return self.session.post_mo(self.mo, *params, status='deleted')
+    def rn(self, *data):
+        return self.mo.rn(*data)
+
+    def name(self, *data):
+        return self.mo.name(*data)
 
 
 class RestClient(ApicSession):
 
-    """APIC REST client for OpenStack Neutron."""
+    """APIC REST client for OpenStack Neutron.
 
-    def __init__(self, hosts, usr=None, pwd=None, ssl=False):
+    Can be used to create objects singularly or to build more complicated
+    transactions.
+    """
+
+    def __init__(self, system_id, hosts, usr=None, pwd=None, ssl=False):
         """Establish a session with the APIC."""
         super(RestClient, self).__init__(hosts, usr, pwd, ssl)
-
+        ManagedObjectClass.scope = '_' + system_id + '_'
         # TODO(Henry): Instantiate supported MOs on demand instead of
         #              creating all of them up front here.
         # Supported objects for OpenStack Neutron
         for mo_class in ManagedObjectClass.supported_mos:
             self.__dict__[mo_class] = ManagedObjectAccess(self, mo_class)
+
+    def verify(self, mo, *params):
+        """Verify that an object exists and renew it if needed."""
+        if mo.rn_fmt.count("%s") > 0:
+            renewable = [x for x in params[(0 - mo.rn_fmt.count("%s")):]
+                         if hasattr(x, 'uid')]
+            if renewable:
+                current = self.get_mo(mo, *params)
+                if not current:
+                    map(lambda y: y.renew(), renewable)
+                    return True
+        return False
+
+    @contextlib.contextmanager
+    def transaction(self, transaction=None, ph=None):
+        if not transaction:
+            transaction = Transaction(self)
+            yield transaction
+            if transaction.root:
+                result = transaction.commit()
+                if ph is not None:
+                    ph.append(result)
+        else:
+            # Only the top owner will commit the transaction
+            yield transaction
+
+
+class Transaction(object):
+    """API consistent with RestClient class to operate Transactions."""
+
+    def __init__(self, session):
+        self.root = None
+        self.root_params = []
+        self.root_mo = None
+        self.session = session
+
+        # Each object is going to build from the same root
+        for mo_class in ManagedObjectClass.supported_mos:
+            self.__dict__[mo_class] = TransactionBuilder(self, mo_class)
+
+    def init_root(self, mo, *params, **data):
+        self.session.verify(mo, *params)
+        self.root = TransactionNode(mo.klass_name, mo.rn(*params), **data)
+        self.root_params = params
+        self.root_mo = mo
+
+    def _is_same_node(self, mo_class, mo_rn, node):
+        return (mo_class in node and
+                node[mo_class]['attributes'].get('rn') == mo_rn)
+
+    def _append_child(self, parent, mo, *params, **kwargs):
+        level = parent[mo.container.split('__')[0]]['children']
+        # The merging object is at this level
+        offset = 0 - mo.rn_param_count
+        mo_rn = mo.rn(*params[offset:]) if offset else mo.rn_fmt
+        for child in level:
+            # Check if the node already exists
+            if self._is_same_node(mo.klass_name, mo_rn, child):
+                # Update and return the found node
+                return child.update_attributes(rn=mo_rn, **kwargs)
+
+        # Node not found, add at this level
+        if self.session.verify(mo, *params):
+            # Re calculate RN for current MO
+            mo_rn = mo.rn(*params[offset:]) if offset else mo.rn_fmt
+        curr = TransactionNode(mo.klass_name, mo_rn, **kwargs)
+        level.append(curr)
+        return curr
+
+    def create_branch(self, mo, *params):
+        """Recursively create all container nodes."""
+        offset = 0 - mo.rn_param_count
+        rn = mo.rn(*params[offset:]) if offset else mo.rn_fmt
+        if not mo.container:
+            # End of recursion
+            if not self.root:
+                self.init_root(mo, *params)
+            elif not self._is_same_node(mo.klass_name, rn, self.root):
+                raise cexc.ApicInvalidTransactionMultipleRoot()
+            return self.root
+        container = ManagedObjectClass(mo.container)
+        parent = self.create_branch(container,
+                                    *params[:container.dn_param_count])
+        # Mo is child of this node
+        curr = self._append_child(parent, mo, *params)
+        return curr
+
+    def commit(self):
+        return self.session.post_body(
+            self.root_mo, json.dumps(self.root, cls=ApicNameEncoder),
+            *self.root_params)
+
+
+class TransactionBuilder(object):
+    """Creates a ManagedObject subtree starting from a root."""
+
+    def __init__(self, transaction, mo_class):
+        self.trs = transaction
+        self.mo = ManagedObjectClass(mo_class)
+
+    def add(self, *args, **kwargs):
+        node = self.trs.create_branch(self.mo, *args)
+        node.update_attributes(**kwargs)
+
+    def remove(self, *args):
+        node = self.trs.create_branch(self.mo, *args)
+        node.update_attributes(status='deleted')
+
+
+class TransactionNode(dict):
+
+    def __init__(self, mo_class, mo_rn, **kwargs):
+        dict.__init__(self)
+        self.mo_class = mo_class
+        self.mo_rn = mo_rn
+        self.attributes = {"rn": str(mo_rn)}
+        self.children = []
+        self.attributes.update({str(key): str(kwargs[key]) for key in kwargs})
+        self[mo_class] = {"attributes": self.attributes,
+                          "children": self.children}
+
+    def update_attributes(self, **kwargs):
+        self[self.mo_class]['attributes'].update(**kwargs)
+        return self
+
+
+class ApicNameEncoder(json.JSONEncoder):
+
+    def default(self, obj):
+        if isinstance(obj, ApicName):
+            return str(obj)
+        return json.JSONEncoder.default(self, obj)

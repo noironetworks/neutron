@@ -20,6 +20,7 @@ import requests
 import requests.exceptions
 
 from neutron.plugins.ml2.drivers.cisco.apic import apic_client as apic
+from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper as mapper
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as cexc
 from neutron.tests import base
 from neutron.tests.unit.ml2.drivers.cisco.apic import (
@@ -31,7 +32,9 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
     def setUp(self):
         super(TestCiscoApicClient, self).setUp()
         self.set_up_mocks()
-        self.apic = apic.RestClient(mocked.APIC_HOSTS)
+        self.apic = apic.RestClient(mocked.APIC_SYSTEM_ID,
+                                    mocked.APIC_HOSTS)
+        self.transaction = apic.Transaction(self.apic)
         self.addCleanup(mock.patch.stopall)
 
     def _mock_authenticate(self, timeout=None):
@@ -44,7 +47,8 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
     def test_login_by_instantiation(self):
         self.reset_reponses()
         self.mock_apic_manager_login_responses()
-        apic2 = apic.RestClient(mocked.APIC_HOSTS,
+        apic2 = apic.RestClient(mocked.APIC_SYSTEM_ID,
+                                mocked.APIC_HOSTS,
                                 usr=mocked.APIC_USR, pwd=mocked.APIC_PWD)
         self.assertIsNotNone(apic2.authentication)
         self.assertEqual(apic2.username, mocked.APIC_USR)
@@ -56,7 +60,8 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
         self.assertTrue(self.apic.api_base[0].startswith('http://'))
         self.assertEqual(self.apic.username, mocked.APIC_USR)
         self.assertIsNotNone(self.apic.authentication)
-        self.apic = apic.RestClient(mocked.APIC_HOSTS, mocked.APIC_PORT,
+        self.apic = apic.RestClient(mocked.APIC_SYSTEM_ID,
+                                    mocked.APIC_HOSTS, mocked.APIC_PORT,
                                     ssl=True)
         self.assertTrue(self.apic.api_base[0].startswith('https://'))
 
@@ -237,7 +242,6 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
 
     def test_create_mo_fails(self):
         self._mock_authenticate()
-        self.mock_response_for_post('fvTenant', name=mocked.APIC_TENANT)
         self.mock_error_post_response(requests.codes.bad_request,
                                       code='not103',
                                       text=u'Fake not103 error')
@@ -264,3 +268,41 @@ class TestCiscoApicClient(base.BaseTestCase, mocked.ControllerMixin):
         self._mock_authenticate()
         self.mock_response_for_get('other', name=mocked.APIC_TENANT)
         self.assertIsNone(self.apic.fvTenant.get(mocked.APIC_TENANT))
+
+    def test_create_multiple_root_fail(self):
+        self.apic.fvSubnet.create('root1', 'bd', 'subnet',
+                                  transaction=self.transaction)
+        self.assertRaises(cexc.ApicInvalidTransactionMultipleRoot,
+                          self.apic.fvSubnet.create,
+                          'root2', 'bd', 'subnet',
+                          transaction=self.transaction)
+
+    def test_sub_transaction(self):
+        with self.apic.transaction() as trs:
+            trs.commit = mock.Mock()
+            self.apic.fvSubnet.create(mocked.APIC_TENANT, 'bd', 'subnet',
+                                      transaction=self.transaction)
+            self.assertFalse(trs.commit.called)
+            self.apic.fvSubnet.create(mocked.APIC_TENANT, 'bd1', 'subnet',
+                                      transaction=self.transaction)
+            self.assertFalse(trs.commit.called)
+            self.apic.fvSubnet.create(mocked.APIC_TENANT, 'bd1', 'subnet1',
+                                      transaction=self.transaction)
+            self.assertFalse(trs.commit.called)
+        trs.commit.assert_called_once()
+
+    def test_renew_called(self):
+        s_name = mapper.ApicName('name', 'id')
+        s_name.renew = mock.Mock()
+        self._mock_authenticate()
+        self.mock_response_for_get('fvSubnet')
+        self.apic.fvSubnet.create(mocked.APIC_TENANT, 'bd', s_name)
+        s_name.renew.assert_called_once()
+
+    def test_renew_not_called(self):
+        s_name = mapper.ApicName('name', 'id')
+        s_name.renew = mock.Mock()
+        self._mock_authenticate()
+        self.mock_response_for_get('fvSubnet', name=s_name)
+        self.apic.fvSubnet.create(mocked.APIC_TENANT, 'bd', s_name)
+        self.assertFalse(s_name.renew.called)

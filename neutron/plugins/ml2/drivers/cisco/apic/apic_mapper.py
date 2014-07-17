@@ -15,6 +15,8 @@
 #
 # @author: Mandeep Dhami (dhami@noironetworks.com), Cisco Systems Inc.
 
+from contextlib import contextmanager
+
 from keystoneclient.v2_0 import client as keyclient
 from oslo.config import cfg
 
@@ -32,165 +34,142 @@ NAME_TYPE_NETWORK = 'network'
 NAME_TYPE_SUBNET = 'subnet'
 NAME_TYPE_PORT = 'port'
 NAME_TYPE_ROUTER = 'router'
+NAME_TYPE_APP_PROFILE = 'app-profile'
+
+
+@contextmanager
+def mapper_context(context):
+    if context and (not hasattr(context, '_plugin_context') or
+                    context._plugin_context is None):
+        context._plugin_context = context  # temporary circular reference
+        yield context
+        context._plugin_context = None     # break circular reference
+    else:
+        yield context
 
 
 class APICNameMapper(object):
-    def __init__(self, apic_manager, strategy=NAMING_STRATEGY_UUID):
-        self.apic_manager = apic_manager
-        self.db = apic_manager.db
+    def __init__(self, db, strategy=NAMING_STRATEGY_UUID):
+        self.db = db
         self.strategy = strategy
         self.keystone = None
         self.tenants = {}
 
+    def mapper(name_type):
+        """Wrapper to land all the common operations between mappers."""
+        def wrap(func):
+            def inner(inst, context, resource_id, remap=False):
+                if remap:
+                    inst.db.delete_apic_name(resource_id)
+                else:
+                    saved_name = inst.db.get_apic_name(resource_id,
+                                                       name_type)
+                    if saved_name:
+                        return ApicName(saved_name[0], resource_id, context,
+                                        inst, func.__name__)
+                try:
+                    name = func(inst, context, resource_id)
+                except Exception:
+                    with excutils.save_and_reraise_exception():
+                        LOG.exception(_("Exception in looking up name %s"),
+                                      name_type)
+
+                result = resource_id
+                if name:
+                    if inst.strategy == NAMING_STRATEGY_NAMES:
+                        result = name
+                    elif inst.strategy == NAMING_STRATEGY_UUID:
+                        result = name + "-" + result
+                inst.db.update_apic_name(resource_id, name_type, result)
+                return ApicName(result, resource_id, context, inst,
+                                func.__name__)
+            return inner
+        return wrap
+
+    @mapper(NAME_TYPE_TENANT)
     def tenant(self, context, tenant_id):
-        saved_name = self.db.get_apic_name(tenant_id, NAME_TYPE_TENANT)
-        if saved_name:
-            return saved_name[0]
-
         tenant_name = None
-        try:
-            if tenant_id in self.tenants:
-                tenant_name = self.tenants.get(tenant_id)
-            else:
-                if self.keystone is None:
-                    keystone_conf = cfg.CONF.keystone_authtoken
-                    auth_url = ('%s://%s:%s/v2.0/' % (
-                        keystone_conf.auth_protocol,
-                        keystone_conf.auth_host,
-                        keystone_conf.auth_port))
-                    username = keystone_conf.admin_user
-                    password = keystone_conf.admin_password
-                    project_name = keystone_conf.admin_tenant_name
-                    self.keystone = keyclient.Client(
-                        auth_url=auth_url,
-                        username=username,
-                        password=password,
-                        tenant_name=project_name)
-                for tenant in self.keystone.tenants.list():
-                    self.tenants[tenant.id] = tenant.name
-                    if tenant.id == tenant_id:
-                        tenant_name = tenant.name
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up tenant name %r"),
-                              tenant_id)
+        if tenant_id in self.tenants:
+            tenant_name = self.tenants.get(tenant_id)
+        else:
+            if self.keystone is None:
+                keystone_conf = cfg.CONF.keystone_authtoken
+                auth_url = ('%s://%s:%s/v2.0/' % (
+                    keystone_conf.auth_protocol,
+                    keystone_conf.auth_host,
+                    keystone_conf.auth_port))
+                username = keystone_conf.admin_user
+                password = keystone_conf.admin_password
+                project_name = keystone_conf.admin_tenant_name
+                self.keystone = keyclient.Client(
+                    auth_url=auth_url,
+                    username=username,
+                    password=password,
+                    tenant_name=project_name)
+            for tenant in self.keystone.tenants.list():
+                self.tenants[tenant.id] = tenant.name
+                if tenant.id == tenant_id:
+                    tenant_name = tenant.name
+        return tenant_name
 
-        apic_tenant_id = tenant_id
-        if tenant_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_tenant_id = tenant_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_tenant_id = tenant_name + "-" + apic_tenant_id
-
-        self.db.add_apic_name(tenant_id, NAME_TYPE_TENANT, apic_tenant_id)
-        return apic_tenant_id
-
+    @mapper(NAME_TYPE_NETWORK)
     def network(self, context, network_id):
-        saved_name = self.db.get_apic_name(network_id, NAME_TYPE_NETWORK)
-        if saved_name:
-            return saved_name[0]
+        network = context._plugin.get_network(
+            context._plugin_context, network_id)
+        network_name = network['name']
+        return network_name
 
-        network_name = None
-        try:
-            network = context._plugin.get_network(
-                context._plugin_context, network_id)
-            network_name = network['name']
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up network name %r"),
-                              network_id)
-
-        apic_network_id = network_id
-        if network_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_network_id = network_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_network_id = \
-                    network_name + "-" + apic_network_id
-
-        self.db.add_apic_name(network_id, NAME_TYPE_NETWORK, apic_network_id)
-        return apic_network_id
-
+    @mapper(NAME_TYPE_SUBNET)
     def subnet(self, context, subnet_id):
-        saved_name = self.db.get_apic_name(subnet_id, NAME_TYPE_SUBNET)
-        if saved_name:
-            return saved_name[0]
+        subnet = context._plugin.get_subnet(context._plugin_context, subnet_id)
+        subnet_name = subnet['name']
+        return subnet_name
 
-        subnet_name = None
-        try:
-            subnet = context._plugin.get_subnet(
-                context._plugin_context, subnet_id)
-            subnet_name = subnet['name']
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up subnet name %r"),
-                              subnet_id)
-
-        apic_subnet_id = subnet_id
-        if subnet_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_subnet_id = subnet_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_subnet_id = \
-                    subnet_name + "-" + apic_subnet_id
-
-        self.db.add_apic_name(subnet_id, NAME_TYPE_SUBNET, apic_subnet_id)
-        return apic_subnet_id
-
+    @mapper(NAME_TYPE_PORT)
     def port(self, context, port_id):
-        saved_name = self.db.get_apic_name(port_id, NAME_TYPE_PORT)
-        if saved_name:
-            return saved_name[0]
+        port = context._plugin.get_port(context._plugin_context, port_id)
+        port_name = port['name']
+        return port_name
 
-        port_name = None
-        try:
-            port = context._plugin.get_port(
-                context._plugin_context, port_id)
-            port_name = port['name']
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(_("Exception in looking up port name name %r"),
-                              port_id)
-
-        apic_port_id = port_id
-        if port_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_port_id = port_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_port_id = \
-                    port_name + "-" + apic_port_id
-
-        self.db.add_apic_name(port_id, NAME_TYPE_PORT, apic_port_id)
-        return apic_port_id
-
+    @mapper(NAME_TYPE_ROUTER)
     def router(self, context, router_id):
-        saved_name = self.db.get_apic_name(router_id, NAME_TYPE_ROUTER)
-        if saved_name:
-            return saved_name[0]
+        router = context._plugin.get_router(context._plugin_context, router_id)
+        router_name = router['name']
+        return router_name
 
-        router_name = None
-        try:
-            router = context._plugin.get_router(
-                context._plugin_context, router_id)
-            router_name = router['name']
-        except Exception:
-            with excutils.save_and_reraise_exception() as ctxt:
-                ctxt.reraise = False
-                LOG.exception(
-                    _("Exception in looking up router name name %r"),
-                    router_id)
+    def app_profile(self, context, app_profile, remap=False):
+        if remap:
+            self.db.delete_apic_name('app_profile')
+        # Check if a profile is already been used
+        saved_name = self.db.get_apic_name('app_profile',
+                                           NAME_TYPE_APP_PROFILE)
+        if not saved_name:
+            self.db.update_apic_name('app_profile', NAME_TYPE_APP_PROFILE,
+                                     app_profile)
+            result = app_profile
+        else:
+            result = saved_name[0]
+        return ApicName(result, app_profile, None,
+                        self, self.app_profile.__name__)
 
-        apic_router_id = router_id
-        if router_name:
-            if self.strategy == NAMING_STRATEGY_NAMES:
-                apic_router_id = router_name
-            elif self.strategy == NAMING_STRATEGY_UUID:
-                apic_router_id = \
-                    router_name + "-" + apic_router_id
 
-        self.db.add_apic_name(router_id, NAME_TYPE_ROUTER, apic_router_id)
-        return apic_router_id
+class ApicName(object):
+
+    def __init__(self, mapped, uid='', context=None, inst=None, fname=''):
+        self.uid = uid
+        self.context = context
+        self.inst = inst
+        self.fname = fname
+        self.value = mapped
+
+    def renew(self):
+        if self.uid and self.inst and self.fname:
+            # temporary circular reference
+            with mapper_context(self.context) as ctx:
+                result = getattr(self.inst, self.fname)(ctx, self.uid,
+                                                        remap=True)
+            self.value = result.value
+            return self
+
+    def __str__(self):
+        return self.value

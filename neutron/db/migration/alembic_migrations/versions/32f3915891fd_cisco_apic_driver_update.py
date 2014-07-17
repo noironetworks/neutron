@@ -39,6 +39,10 @@ def upgrade(active_plugins=None, options=None):
     if not migration.should_run(active_plugins, migration_for_plugins):
         return
 
+    op.drop_table('cisco_ml2_apic_contracts')
+    op.drop_table('cisco_ml2_apic_port_profiles')
+    op.drop_table('cisco_ml2_apic_epgs')
+
     op.create_table(
         'cisco_ml2_apic_host_links',
         sa.Column('host', sa.String(length=255), nullable=False),
@@ -57,20 +61,12 @@ def upgrade(active_plugins=None, options=None):
         sa.PrimaryKeyConstraint('neutron_id', 'neutron_type'))
 
     op.create_table(
-        'cisco_ml2_apic_keymap',
-        sa.Column('key', sa.String(length=255), nullable=False),
-        sa.Column('value', sa.String(length=255), nullable=False),
-        sa.PrimaryKeyConstraint('key'))
-
-    op.drop_constraint(
-        'pk_cisco_ml2_apic_port_profiles',
-        'cisco_ml2_apic_port_profiles',
-        type_='primary')
-
-    op.create_primary_key(
-        'pk_cisco_ml2_apic_port_profiles',
-        'cisco_ml2_apic_port_profiles',
-        ['node_id', 'from_port', 'to_port'])
+        'cisco_ml2_apic_contracts',
+        sa.Column('tenant_id', sa.String(length=255), nullable=False),
+        sa.Column('router_id', sa.String(length=64), nullable=False),
+        sa.Column('contract_id', sa.String(length=64), nullable=False),
+        sa.Column('filter_id', sa.String(length=64), nullable=False),
+        sa.PrimaryKeyConstraint('router_id'))
 
 
 def downgrade(active_plugins=None, options=None):
@@ -80,13 +76,29 @@ def downgrade(active_plugins=None, options=None):
     op.drop_table('cisco_ml2_apic_config')
     op.drop_table('cisco_ml2_apic_names')
     op.drop_table('cisco_ml2_apic_host_links')
+    op.drop_table('cisco_ml2_apic_contracts')
 
-    op.drop_constraint(
-        'pk_cisco_ml2_apic_port_profiles',
-        'cisco_ml2_apic_port_profiles',
-        type_='primary')
+    op.create_table(
+        'cisco_ml2_apic_epgs',
+        sa.Column('network_id', sa.String(length=255), nullable=False),
+        sa.Column('epg_id', sa.String(length=64), nullable=False),
+        sa.Column('segmentation_id', sa.String(length=64), nullable=False),
+        sa.Column('provider', sa.Boolean(), default=False, nullable=False),
+        sa.PrimaryKeyConstraint('network_id'))
 
-    op.create_primary_key(
-        'pk_cisco_ml2_apic_port_profiles',
+    op.create_table(
         'cisco_ml2_apic_port_profiles',
-        ['node_id'])
+        sa.Column('node_id', sa.String(length=255), nullable=False),
+        sa.Column('profile_id', sa.String(length=64), nullable=False),
+        sa.Column('hpselc_id', sa.String(length=64), nullable=False),
+        sa.Column('module', sa.String(length=10), nullable=False),
+        sa.Column('from_port', sa.Integer(), nullable=False),
+        sa.Column('to_port', sa.Integer(), nullable=False),
+        sa.PrimaryKeyConstraint('node_id'))
+
+    op.create_table(
+        'cisco_ml2_apic_contracts',
+        sa.Column('tenant_id', sa.String(length=255), nullable=False),
+        sa.Column('contract_id', sa.String(length=64), nullable=False),
+        sa.Column('filter_id', sa.String(length=64), nullable=False),
+        sa.PrimaryKeyConstraint('tenant_id'))

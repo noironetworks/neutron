@@ -50,6 +50,8 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
 
         self.mock_apic_manager_login_responses()
         self.driver = md.APICMechanismDriver()
+        self.driver.synchronizer = None
+        md.APICMechanismDriver.get_base_synchronizer = mock.Mock()
         self.driver.vif_type = 'test-vif_type'
         self.driver.cap_port_filter = 'test-cap_port_filter'
         self.driver.name_mapper = mock.Mock()
@@ -57,9 +59,12 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         self.driver.name_mapper.network.return_value = mocked.APIC_NETWORK
         self.driver.name_mapper.subnet.return_value = mocked.APIC_SUBNET
         self.driver.name_mapper.port.return_value = mocked.APIC_PORT
+        self.driver.name_mapper.router.return_value = mocked.APIC_ROUTER
+        self.driver.name_mapper.app_profile.return_value = mocked.APIC_AP
         self.driver.apic_manager = mock.Mock(
             name_mapper=mock.Mock(), ext_net_dict=self.external_network_dict)
 
+        self.driver.apic_manager.apic.transaction = self.fake_transaction
         self.addCleanup(mock.patch.stopall)
 
     def test_initialize(self):
@@ -67,6 +72,8 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
                    'APICManager.ensure_infra_created_on_apic').start()
         mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_manager.'
                    'APICManager.ensure_bgp_pod_policy_created_on_apic').start()
+        mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_mapper.'
+                   'APICNameMapper.app_profile').start()
         self.driver.initialize()
         self.session = self.driver.apic_manager.apic.session
         self.assert_responses_drained()
@@ -80,11 +87,9 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
                                           'vm1', net_ctx, HOST_ID1)
         mgr = self.driver.apic_manager
         self.driver.update_port_postcommit(port_ctx)
-        mgr.ensure_tenant_created_on_apic.assert_called_once_with(
-            mocked.APIC_TENANT)
         mgr.ensure_path_created_for_port.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK, HOST_ID1,
-            ENCAP)
+            ENCAP, transaction='transaction')
 
     def test_update_gw_port_postcommit(self):
         net_ctx = self._get_network_context(mocked.APIC_TENANT,
@@ -101,20 +106,23 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
             port_ctx.current['device_id'])
         mgr.ensure_context_enforced.assert_called_once()
         mgr.ensure_external_routed_network_created.assert_called_once_with(
-            mocked.APIC_NETWORK)
+            mocked.APIC_NETWORK, transaction='transaction')
         mgr.ensure_logical_node_profile_created.assert_called_once_with(
             mocked.APIC_NETWORK, mocked.APIC_EXT_SWITCH,
             mocked.APIC_EXT_MODULE, mocked.APIC_EXT_PORT,
-            mocked.APIC_EXT_ENCAP, mocked.APIC_EXT_CIDR_EXPOSED)
+            mocked.APIC_EXT_ENCAP, mocked.APIC_EXT_CIDR_EXPOSED,
+            transaction='transaction')
         mgr.ensure_static_route_created.assert_called_once_with(
             mocked.APIC_NETWORK, mocked.APIC_EXT_SWITCH,
-            mocked.APIC_EXT_GATEWAY_IP)
+            mocked.APIC_EXT_GATEWAY_IP, transaction='transaction')
         mgr.ensure_external_epg_created.assert_called_once_with(
-            mocked.APIC_NETWORK)
+            mocked.APIC_NETWORK, transaction='transaction')
         mgr.ensure_external_epg_consumed_contract.assert_called_once_with(
-            mocked.APIC_NETWORK, mocked.APIC_CONTRACT)
+            mocked.APIC_NETWORK, mgr.get_router_contract.return_value,
+            transaction='transaction')
         mgr.ensure_external_epg_provided_contract.assert_called_once_with(
-            mocked.APIC_NETWORK, mocked.APIC_CONTRACT)
+            mocked.APIC_NETWORK, mgr.get_router_contract.return_value,
+            transaction='transaction')
 
     def test_update_gw_port_postcommit_fail_contract_create(self):
         net_ctx = self._get_network_context(mocked.APIC_TENANT,
@@ -137,9 +145,9 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         mgr = self.driver.apic_manager
         self.driver.create_network_postcommit(ctx)
         mgr.ensure_bd_created_on_apic.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK)
+            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
         mgr.ensure_epg_created_for_network.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK)
+            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
 
     def test_create_external_network_postcommit(self):
         ctx = self._get_network_context(mocked.APIC_TENANT,
@@ -157,9 +165,9 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         mgr = self.driver.apic_manager
         self.driver.delete_network_postcommit(ctx)
         mgr.delete_bd_on_apic.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK)
+            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
         mgr.delete_epg_for_network.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK)
+            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
 
     def test_delete_external_network_postcommit(self):
         ctx = self._get_network_context(mocked.APIC_TENANT,

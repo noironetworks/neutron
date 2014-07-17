@@ -23,6 +23,7 @@ from neutron.db import model_base
 from neutron.openstack.common import excutils
 from neutron.plugins.common import constants
 
+from neutron.plugins.ml2.drivers.cisco.apic.apic_mapper import mapper_context
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
 
 
@@ -39,16 +40,18 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         self.name_mapper = \
             mechanism_apic.APICMechanismDriver.get_apic_name_mapper(
                 self.manager)
+        self.synchronizer = None
+        self.manager.ensure_infra_created_on_apic()
+        self.manager.ensure_bgp_pod_policy_created_on_apic()
 
     def _map_names(self, context,
                    tenant_id, router_id, net_id, subnet_id):
         context._plugin = self
-        context._plugin_context = context   # temporary circular reference
-        atenant_id = tenant_id and self.name_mapper.tenant(context, tenant_id)
-        arouter_id = router_id and self.name_mapper.router(context, router_id)
-        anet_id = net_id and self.name_mapper.network(context, net_id)
-        asubnet_id = subnet_id and self.name_mapper.subnet(context, subnet_id)
-        context._plugin_context = None      # break circular reference
+        with mapper_context(context) as ctx:
+            atenant_id = tenant_id and self.name_mapper.tenant(ctx, tenant_id)
+            arouter_id = router_id and self.name_mapper.router(ctx, router_id)
+            anet_id = net_id and self.name_mapper.network(ctx, net_id)
+            asubnet_id = subnet_id and self.name_mapper.subnet(ctx, subnet_id)
         return atenant_id, arouter_id, anet_id, asubnet_id
 
     @staticmethod
@@ -60,61 +63,110 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         """returns string description of the plugin."""
         return _("L3 Router Service Plugin for basic L3 using the APIC")
 
-    def delete_router(self, context, router_id):
-        # Delete the router
-        self.manager.delete_router(router_id)
+    def sync_init(f):
+        def inner(inst, *args, **kwargs):
+            if not inst.synchronizer:
+                inst.synchronizer = \
+                    mechanism_apic.APICMechanismDriver.\
+                    get_router_synchronizer(inst)
+                inst.synchronizer.sync_router()
+            return f(inst, *args, **kwargs)
+        return inner
 
-        # Delete router in parent
-        super(ApicL3ServicePlugin, self).delete_router(context, router_id)
-
-    def add_router_interface(self, context, router_id, interface_info):
-        tenant_id = context.tenant_id
+    def add_router_interface_postcommit(self, context, router_id,
+                                        interface_info):
         if 'subnet_id' in interface_info:
-            subnet_id = interface_info['subnet_id']
-            subnet = self.get_subnet(context, subnet_id)
+            subnet = self.get_subnet(context, interface_info['subnet_id'])
             network_id = subnet['network_id']
+            tenant_id = subnet['tenant_id']
         else:
-            port = self._core_plugin._get_port(context,
-                                               interface_info['port_id'])
+            port = self.get_port(context, interface_info['port_id'])
             network_id = port['network_id']
+            tenant_id = port['tenant_id']
 
         # Map openstack IDs to APIC IDs
         atenant_id, arouter_id, anetwork_id, _ = self._map_names(
             context, tenant_id, router_id, network_id, None)
 
         # Program APIC
-        self.manager.add_router_interface(atenant_id, router_id,
+        self.manager.add_router_interface(atenant_id, arouter_id,
                                           anetwork_id)
 
-        # Create interface in parent
-        try:
-            return super(ApicL3ServicePlugin, self).add_router_interface(
-                context, router_id, interface_info)
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                self.manager.remove_router_interface(atenant_id, router_id,
-                                                     anetwork_id)
-
-    def remove_router_interface(self, context, router_id, interface_info):
-        port = self.get_port(context, interface_info['port_id'])
-        tenant_id = port['tenant_id']
-        subnet_id = port['fixed_ips'][0]['subnet_id']
-        subnet = self.get_subnet(context, subnet_id)
-        network_id = subnet['network_id']
+    def remove_router_interface_precommit(self, context, router_id,
+                                          interface_info):
+        if 'subnet_id' in interface_info:
+            subnet = self.get_subnet(context, interface_info['subnet_id'])
+            network_id = subnet['network_id']
+            tenant_id = subnet['tenant_id']
+        else:
+            port = self.get_port(context, interface_info['port_id'])
+            network_id = port['network_id']
+            tenant_id = port['tenant_id']
 
         # Map openstack IDs to APIC IDs
         atenant_id, arouter_id, anetwork_id, _ = self._map_names(
             context, tenant_id, router_id, network_id, None)
 
         # Program APIC
-        self.manager.remove_router_interface(atenant_id, router_id,
+        self.manager.remove_router_interface(atenant_id, arouter_id,
                                              anetwork_id)
 
-        # Delete interface in parent
+    def delete_router_postcommit(self, context, router_id):
+        context._plugin = self
+        with mapper_context(context) as ctx:
+            arouter_id = router_id and self.name_mapper.router(ctx, router_id)
+        self.manager.delete_router(arouter_id)
+
+    # Router API
+
+    @sync_init
+    def create_router(self, *args, **kwargs):
+        return super(ApicL3ServicePlugin, self).create_router(*args, **kwargs)
+
+    @sync_init
+    def update_router(self, *args, **kwargs):
+        return super(ApicL3ServicePlugin, self).update_router(*args, **kwargs)
+
+    @sync_init
+    def get_router(self, *args, **kwargs):
+        return super(ApicL3ServicePlugin, self).get_router(*args, **kwargs)
+
+    @sync_init
+    def get_routers(self, *args, **kwargs):
+        return super(ApicL3ServicePlugin, self).get_routers(*args, **kwargs)
+
+    @sync_init
+    def get_routers_count(self, *args, **kwargs):
+        return super(ApicL3ServicePlugin, self).get_routers_count(*args,
+                                                                  **kwargs)
+
+    @sync_init
+    def delete_router(self, context, router_id):
+        result = super(ApicL3ServicePlugin, self).delete_router(context,
+                                                                router_id)
+        self.delete_router_postcommit(context, router_id)
+        return result
+
+    # Router Interface API
+
+    @sync_init
+    def add_router_interface(self, context, router_id, interface_info):
+        # Create interface in parent
+        result = super(ApicL3ServicePlugin, self).add_router_interface(
+            context, router_id, interface_info)
         try:
-            super(ApicL3ServicePlugin, self).remove_router_interface(
-                context, router_id, interface_info)
+            self.add_router_interface_postcommit(context, router_id,
+                                                 interface_info)
         except Exception:
             with excutils.save_and_reraise_exception():
-                self.manager.add_router_interface(atenant_id, arouter_id,
-                                                  anetwork_id)
+                # Rollback db operation
+                super(ApicL3ServicePlugin, self).remove_router_interface(
+                    context, router_id, interface_info)
+        return result
+
+    @sync_init
+    def remove_router_interface(self, context, router_id, interface_info):
+        self.remove_router_interface_precommit(context, router_id,
+                                               interface_info)
+        return super(ApicL3ServicePlugin, self).remove_router_interface(
+            context, router_id, interface_info)

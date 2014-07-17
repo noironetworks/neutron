@@ -17,6 +17,7 @@
 
 import mock
 
+from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic as md
 from neutron.services.l3_router import l3_apic
 from neutron.tests import base
 from neutron.tests.unit.ml2.drivers.cisco.apic import (
@@ -72,6 +73,7 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
                    'ApicDbModel').start()
 
         self.plugin = l3_apic.ApicL3ServicePlugin()
+        md.APICMechanismDriver.get_router_synchronizer = mock.Mock()
         self.context = FakeContext()
         self.context.tenant_id = TENANT
         self.interface_info = {'subnet_id': SUBNET, 'port_id': PORT}
@@ -84,6 +86,7 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         self.plugin.name_mapper.subnet.return_value = mocked.APIC_SUBNET
         self.plugin.name_mapper.port.return_value = mocked.APIC_PORT
         self.plugin.name_mapper.router.return_value = mocked.APIC_ROUTER
+        self.plugin.name_mapper.app_profile.return_value = mocked.APIC_AP
 
         self.contract = FakeContract()
         self.plugin.manager.get_router_contract = mock.Mock()
@@ -99,6 +102,7 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         self.plugin.manager.set_contract_for_epg = mock.Mock(
             return_value=True)
         self.plugin.manager.delete_contract_for_epg = mock.Mock()
+        self.plugin.manager.apic.transaction = self.fake_transaction
 
         self.plugin.get_subnet = mock.Mock(return_value=self.subnet)
         self.plugin.get_network = mock.Mock(return_value=self.interface_info)
@@ -116,11 +120,11 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         mgr = self.plugin.manager
         self.plugin.add_router_interface(self.context, ROUTER,
                                          self.interface_info)
-        mgr.get_router_contract.assert_called_once_with(mocked.APIC_ROUTER,
-                                                        owner='common')
+        mgr.get_router_contract.assert_called_once_with(
+            mocked.APIC_ROUTER, owner='common', transaction='transaction')
         mgr.ensure_epg_created_for_network.assertEqual(TENANT_CONTRACT)
         mgr.ensure_epg_created_for_network.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK)
+            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
         mgr.ensure_epg_created_for_network.assertEqual(NETWORK_EPG)
         mgr.db.get_provider_contract.assert_called_once()
         mgr.db.get_provider_contract.assertEqual(None)
@@ -130,27 +134,7 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         mgr = self.plugin.manager
         self.plugin.remove_router_interface(self.context, ROUTER,
                                             self.interface_info)
-        mgr.get_router_contract.assert_called_once_with(mocked.APIC_ROUTER,
-                                                        owner='common')
         mgr.ensure_epg_created_for_network.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK)
+            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
         mgr.ensure_epg_created_for_network.assertEqual(NETWORK_EPG)
         mgr.delete_contract_for_epg.assert_called_once()
-
-    def test_add_router_interface_fail_contract_delete(self):
-        mgr = self.plugin.manager
-        with mock.patch('neutron.db.l3_gwmode_db.L3_NAT_db_mixin.'
-                        'add_router_interface',
-                        side_effect=KeyError()):
-            self.plugin.add_router_interface(self.context, ROUTER,
-                                             self.interface_info)
-            mgr.delete_contract_for_epg.assert_called_once()
-
-    def test_delete_router_interface_fail_contract_create(self):
-        mgr = self.plugin.manager
-        with mock.patch('neutron.db.l3_gwmode_db.L3_NAT_db_mixin.'
-                        'remove_router_interface',
-                        side_effect=KeyError()):
-            self.plugin.remove_router_interface(self.context, ROUTER,
-                                                self.interface_info)
-            mgr.set_contract_for_epg.assert_called_once()

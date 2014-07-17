@@ -15,6 +15,7 @@
 #
 # @author: Henry Gessau, Cisco Systems
 
+import contextlib
 import mock
 import requests
 
@@ -67,7 +68,7 @@ APIC_VLANID_TO = 2999
 APIC_VLAN_FROM = 'vlan-%d' % APIC_VLANID_FROM
 APIC_VLAN_TO = 'vlan-%d' % APIC_VLANID_TO
 
-APIC_ROUTER = 'router1'
+APIC_ROUTER = apic.ApicName('router', 'router_id')
 
 APIC_EXT_SWITCH = '203'
 APIC_EXT_MODULE = '1'
@@ -75,6 +76,8 @@ APIC_EXT_PORT = '34'
 APIC_EXT_ENCAP = 'vlan-100'
 APIC_EXT_CIDR_EXPOSED = '10.10.40.2/16'
 APIC_EXT_GATEWAY_IP = '10.10.40.1'
+
+APIC_KEY = 'key'
 
 
 class ControllerMixin(object):
@@ -169,6 +172,15 @@ class ControllerMixin(object):
                 # User-friendly error message
                 msg = req + ' response queue not drained'
                 self.fail(msg=msg)
+
+    def get_top_container(self, mo):
+        while mo.container:
+            mo = apic.ManagedObjectClass(mo.container)
+        return mo
+
+    @contextlib.contextmanager
+    def fake_transaction(self, *args, **kwargs):
+        yield 'transaction'
 
 
 class ConfigMixin(object):
@@ -291,7 +303,23 @@ class DbModelMixin(object):
         query.distinct.return_value = value
 
 
+class FakeQuery(list):
+
+    def __init__(self, *args):
+        self.extend(args)
+
+    def count(self):
+        return len(self)
+
+
 class FakeDbContract(object):
 
     def __init__(self, contract_id):
         self.contract_id = contract_id
+
+
+class FakeKeyPair(object):
+
+    def __init__(self, key):
+        self.key = key
+        self.value = ''

@@ -16,9 +16,7 @@
 # @author: Arvind Somya (asomya@cisco.com), Cisco Systems Inc.
 
 import itertools
-import uuid
 
-from neutron.openstack.common import excutils
 from neutron.openstack.common import log
 from neutron.plugins.ml2.drivers.cisco.apic import apic_client
 from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper
@@ -31,7 +29,6 @@ LOG = log.getLogger(__name__)
 
 CONTEXT_ENFORCED = '1'
 CONTEXT_UNENFORCED = '2'
-CONTEXT_DEFAULT = 'default'
 CONTEXT_SHARED = 'shared'
 DN_KEY = 'dn'
 PORT_DN_PATH = 'topology/pod-1/paths-%s/pathep-[eth%s/%s]'
@@ -63,7 +60,7 @@ class APICManager(object):
     managed objects and contains workflows to implement these
     translations.
     """
-    def __init__(self, apic_config, network_config):
+    def __init__(self, apic_config, network_config, apic_system_id):
         self.db = apic_model.ApicDbModel()
         self.apic_config = apic_config
         self.vlan_ranges = network_config['vlan_ranges']
@@ -72,23 +69,20 @@ class APICManager(object):
 
         # Connect to the the APIC
         self.apic = apic_client.RestClient(
+            apic_system_id,
             apic_config.apic_hosts,
             apic_config.apic_username,
-            apic_config.apic_password
+            apic_config.apic_password,
         )
 
-        self.port_profiles = {}
-        self.phys_domain = None
-        self.vlan_ns = None
-        self.node_profiles = {}
-        self.app_profile_name = apic_config.apic_app_profile_name
-        self.entity_profile = None
-        self.function_profile = None
-        self.clear_node_profiles = apic_config.apic_clear_node_profiles
-
-    def _create_if_not_exist(self, mo, *params, **attributes):
-        if not mo.get(*params):
-            mo.create(*params, **attributes)
+        self.apic_mapper = apic_mapper.APICNameMapper(
+            self.db, apic_config.apic_name_mapping)
+        self.phys_domain_dn = None
+        self.entity_profile_dn = None
+        self.apic_system_id = apic_system_id
+        self.app_profile_name = self.apic_mapper.app_profile(
+            None, apic_config.apic_app_profile_name)
+        self.function_profile = apic_config.apic_function_profile
 
     def ensure_infra_created_on_apic(self):
         """Ensure the infrastructure is setup.
@@ -97,17 +91,16 @@ class APICManager(object):
         Loop over the switch dictionary from the config and
         setup profiles for switches, modules and ports
         """
-
         # Create VLAN namespace
         vlan_ns_name = self.apic_config.apic_vlan_ns_name
         vlan_range = self.vlan_ranges[0]
         (vlan_min, vlan_max) = vlan_range.split(':')[-2:]
-        vlan_ns = self.ensure_vlan_ns_created_on_apic(
+        vlan_ns_dn = self.ensure_vlan_ns_created_on_apic(
             vlan_ns_name, vlan_min, vlan_max)
 
         # Create domain
         phys_name = self.apic_config.apic_domain_name
-        self.ensure_phys_domain_created_on_apic(phys_name, vlan_ns)
+        self.ensure_phys_domain_created_on_apic(phys_name, vlan_ns_dn)
 
         # Create entity profile
         ent_name = self.apic_config.apic_entity_profile
@@ -127,121 +120,75 @@ class APICManager(object):
                 module, port = module_port.split('/')
                 hosts = self.switch_dict[switch][module_port]
                 for host in hosts:
-                    self.add_hostlink(
-                        host, 'static', None, switch, module, port)
+                    self.add_hostlink(host, 'static', None, switch, module,
+                                      port)
 
-    def ensure_vlan_ns_created_on_apic(self, name, vlan_min, vlan_max):
+    def ensure_vlan_ns_created_on_apic(self, name, vlan_min, vlan_max,
+                                       transaction=None):
         """Creates a static VLAN namespace with the given vlan range."""
-        ns_args = name, 'static'
-        if self.clear_node_profiles:
-            self.apic.fvnsVlanInstP.delete(name, 'dynamic')
-            self.apic.fvnsVlanInstP.delete(*ns_args)
-        self.vlan_ns = self.apic.fvnsVlanInstP.get(*ns_args)
-        if not self.vlan_ns:
-            try:
-                self.apic.fvnsVlanInstP.create(*ns_args)
-                vlan_min = 'vlan-' + vlan_min
-                vlan_max = 'vlan-' + vlan_max
-                ns_blk_args = name, 'static', vlan_min, vlan_max
-                vlan_encap = self.apic.fvnsEncapBlk__vlan.get(*ns_blk_args)
-                if not vlan_encap:
-                    ns_kw_args = {
-                        'name': 'encap',
-                        'from': vlan_min,
-                        'to': vlan_max
-                    }
-                    self.apic.fvnsEncapBlk__vlan.create(*ns_blk_args,
-                                                        **ns_kw_args)
-                self.vlan_ns = self.apic.fvnsVlanInstP.get(*ns_args)
-                return self.vlan_ns
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the vlan namespace
-                    self.apic.fvnsVlanInstP.delete(*ns_args)
+        with self.apic.transaction(transaction) as trs:
+            ns_args = name, 'static'
+            self.apic.fvnsVlanInstP.create(*ns_args, transaction=trs)
+            vlan_min = 'vlan-' + vlan_min
+            vlan_max = 'vlan-' + vlan_max
+            ns_blk_args = name, 'static', vlan_min, vlan_max
+            ns_kw_args = {
+                'name': 'encap',
+                'from': vlan_min,
+                'to': vlan_max
+            }
+            self.apic.fvnsEncapBlk__vlan.create(*ns_blk_args,
+                                                transaction=trs,
+                                                **ns_kw_args)
+        return self.apic.fvnsVlanInstP.dn(*ns_args)
 
-    def ensure_phys_domain_created_on_apic(self, phys_name,
-                                           vlan_ns=None, vxlan_ns=None):
+    def ensure_phys_domain_created_on_apic(self, phys_name, vlan_ns_dn=None,
+                                           vxlan_ns_dn=None, transaction=None):
         """Create physical domain.
-
         Creates the physical domain on the APIC and adds a VLAN or VXLAN
         namespace to that physical domain.
         """
-        if self.clear_node_profiles:
-            self.apic.physDomP.delete(phys_name)
-        self.phys_domain = self.apic.physDomP.get(phys_name)
-        if not self.phys_domain:
-            try:
-                self.apic.physDomP.create(phys_name)
-                if vlan_ns:
-                    vlan_ns_dn = vlan_ns[DN_KEY]
-                    self.apic.infraRsVlanNs.create(phys_name,
-                                                   tDn=vlan_ns_dn)
-                self.phys_domain = self.apic.physDomP.get(phys_name)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the physical domain
-                    self.apic.physDomP.delete(phys_name)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.physDomP.create(phys_name, transaction=trs)
+            if vlan_ns_dn:
+                self.apic.infraRsVlanNs.create(phys_name,
+                                               tDn=vlan_ns_dn, transaction=trs)
+        self.phys_domain_dn = self.apic.physDomP.dn(phys_name)
 
-    def ensure_entity_profile_created_on_apic(self, name):
+    def ensure_entity_profile_created_on_apic(self, name, transaction=None):
         """Create the infrastructure entity profile."""
-        if self.clear_node_profiles:
-            self.apic.infraAttEntityP.delete(name)
-        self.entity_profile = self.apic.infraAttEntityP.get(name)
-        if not self.entity_profile:
-            try:
-                phys_dn = self.phys_domain[DN_KEY]
-                self.apic.infraAttEntityP.create(name)
-                # Attach phys domain to entity profile
-                self.apic.infraRsDomP.create(name, phys_dn)
-                self.entity_profile = self.apic.infraAttEntityP.get(name)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the created entity profile
-                    self.apic.infraAttEntityP.delete(name)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.infraAttEntityP.create(name, transaction=trs)
+            # Attach phys domain to entity profile
+            self.apic.infraRsDomP.create(name, self.phys_domain_dn,
+                                         transaction=trs)
+        self.entity_profile_dn = self.apic.infraAttEntityP.dn(name)
 
-    def ensure_function_profile_created_on_apic(self, name):
+    def ensure_function_profile_created_on_apic(self, name, transaction=None):
         """Create the infrastructure function profile."""
-        if self.clear_node_profiles:
-            self.apic.infraAccPortGrp.delete(name)
-        self.function_profile = self.apic.infraAccPortGrp.get(name)
-        if not self.function_profile:
-            try:
-                self.apic.infraAccPortGrp.create(name)
-                # Attach entity profile to function profile
-                entp_dn = self.entity_profile[DN_KEY]
-                self.apic.infraRsAttEntP.create(name, tDn=entp_dn)
-                self.function_profile = self.apic.infraAccPortGrp.get(name)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the created function profile
-                    self.apic.infraAccPortGrp.delete(name)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.infraAccPortGrp.create(name, transaction=trs)
+            # Attach entity profile to function profile
+            self.apic.infraRsAttEntP.create(name, tDn=self.entity_profile_dn,
+                                            transaction=trs)
 
-    def ensure_infra_created_for_switch(self, switch):
-            # Create a node and profile for this switch
-            if not self.function_profile:
-                self.function_profile = self.apic.infraAccPortGrp.get(
-                    self.apic_config.apic_function_profile)
-            self.ensure_node_profile_created_for_switch(switch)
-            ppname = self.ensure_port_profile_created_for_switch(switch)
+    def ensure_infra_created_for_switch(self, switch, transaction=None):
+        # Create a node and profile for this switch
+        with self.apic.transaction(transaction) as trs:
+            self.ensure_node_profile_created_for_switch(switch,
+                                                        transaction=trs)
+            ppname = self.ensure_port_profile_created_for_switch(
+                switch, transaction=trs)
 
             # Setup each module and port range
             for module in self.db.get_modules_for_switch(switch):
                 module = module[0]
-                profile = self.db.get_profile_for_module(
-                    switch, ppname, module)
-                if not profile:
-                    hname = uuid.uuid4()
-                    try:
-                        self.apic.infraHPortS.create(ppname, hname, 'range')
-                        fpdn = self.function_profile[DN_KEY]
-                        self.apic.infraRsAccBaseGrp.create(
-                            ppname, hname, 'range', tDn=fpdn)
-                    except (cexc.ApicResponseNotOk, KeyError):
-                        with excutils.save_and_reraise_exception():
-                            self.apic.infraHPortS.delete(
-                                ppname, hname, 'range')
-                else:
-                    hname = profile.hpselc_id
+                hname = 'hports-%s' % module
+                self.apic.infraHPortS.create(ppname, hname, 'range',
+                                             transaction=trs)
+                fpdn = self.apic.infraAccPortGrp.dn(self.function_profile)
+                self.apic.infraRsAccBaseGrp.create(ppname, hname, 'range',
+                                                   tDn=fpdn, transaction=trs)
 
                 # Add this module and ports to the profile
                 ports = [p[0] for p in
@@ -250,106 +197,75 @@ class APICManager(object):
                 #ranges = APICManager.group_by_ranges(ports)
                 ranges = zip(ports, ports)
                 for prange in ranges:
-                    if not self.db.get_profile_for_module_and_ports(
-                            switch, ppname, module, prange[0], prange[-1]):
-                        # Create port block for this port range
-                        pbname = uuid.uuid4()
-                        self.apic.infraPortBlk.create(ppname, hname, 'range',
-                                                      pbname, fromCard=module,
-                                                      toCard=module,
-                                                      fromPort=str(prange[0]),
-                                                      toPort=str(prange[-1]))
-                        # Add DB row
-                        self.db.add_profile_for_module_and_ports(
-                            switch, ppname, hname, module,
-                            prange[0], prange[-1])
+                    # Create port block for this port range
+                    pbname = '%s-%s' % (prange[0], prange[-1])
+                    self.apic.infraPortBlk.create(ppname, hname, 'range',
+                                                  pbname, fromCard=module,
+                                                  toCard=module,
+                                                  fromPort=str(prange[0]),
+                                                  toPort=str(prange[-1]),
+                                                  transaction=trs)
 
-    def ensure_node_profile_created_for_switch(self, switch_id):
+    def ensure_node_profile_created_for_switch(self, switch_id,
+                                               transaction=None):
         """Creates a switch node profile.
 
         Create a node profile for a switch and add a switch
         to the leaf node selector
         """
-        if self.clear_node_profiles:
-            self.apic.infraNodeP.delete(switch_id)
-            self.db.delete_profile_for_node(switch_id)
-        sobj = self.apic.infraNodeP.get(switch_id)
-        if not sobj:
-            try:
-                # Create Node profile
-                self.apic.infraNodeP.create(switch_id)
-                # Create leaf selector
-                lswitch_id = uuid.uuid4()
-                self.apic.infraLeafS.create(switch_id, lswitch_id, 'range')
-                # Add leaf nodes to the selector
-                name = uuid.uuid4()
-                self.apic.infraNodeBlk.create(switch_id, lswitch_id, 'range',
-                                              name, from_=switch_id,
-                                              to_=switch_id)
-                sobj = self.apic.infraNodeP.get(switch_id)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Remove the node profile
-                    self.apic.infraNodeP.delete(switch_id)
+        # Create Node profile
+        with self.apic.transaction(transaction) as trs:
+            self.apic.infraNodeP.create(switch_id, transaction=trs)
+            # Create leaf selector
+            lswitch_id = 'leaf'
+            self.apic.infraLeafS.create(switch_id, lswitch_id, 'range',
+                                        transaction=trs)
+            # Add leaf nodes to the selector
+            name = 'node'
+            self.apic.infraNodeBlk.create(switch_id, lswitch_id, 'range',
+                                          name, from_=switch_id,
+                                          to_=switch_id, transaction=trs)
 
-        self.node_profiles[switch_id] = {
-            'object': sobj
-        }
-
-    def ensure_port_profile_created_for_switch(self, switch):
+    def ensure_port_profile_created_for_switch(self, switch, transaction=None):
         """Check and create infra port profiles for a node."""
-        sprofile = self.db.get_port_profile_for_node(switch)
-        if not sprofile:
-            # Generate uuid for port profile name
-            ppname = uuid.uuid4()
-            try:
-                # Create port profile for this switch
-                pprofile = self.ensure_port_profile_on_apic(ppname)
-                # Add port profile to node profile
-                ppdn = pprofile[DN_KEY]
-                self.apic.infraRsAccPortP.create(switch, ppdn)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete port profile
-                    self.apic.infraAccPortP.delete(ppname)
-        else:
-            ppname = sprofile.profile_id
 
+        # Generate uuid for port profile name
+        ppname = 'pprofile-%s' % switch
+        # Create port profile for this switch
+        with self.apic.transaction(transaction) as trs:
+            self.apic.infraAccPortP.create(ppname, transaction=trs)
+            # Add port profile to node profile
+            ppdn = self.apic.infraAccPortP.dn(ppname)
+            self.apic.infraRsAccPortP.create(switch, ppdn, transaction=trs)
         return ppname
-
-    def ensure_port_profile_on_apic(self, name):
-        """Create a port profile."""
-        try:
-            if not self.apic.infraAccPortP.get(name):
-                self.apic.infraAccPortP.create(name)
-            return self.apic.infraAccPortP.get(name)
-        except (cexc.ApicResponseNotOk, KeyError):
-            with excutils.save_and_reraise_exception():
-                self.apic.infraAccPortP.delete(name)
 
     def ensure_bgp_pod_policy_created_on_apic(self, bgp_pol_name='default',
                                               asn='1', pp_group_name='default',
-                                              p_selector_name='default'):
+                                              p_selector_name='default',
+                                              transaction=None):
         """Set the route reflector for the fabric if missing."""
-        self._create_if_not_exist(self.apic.bgpInstPol, bgp_pol_name)
-        if not self.apic.bgpRRP.get_subtree(bgp_pol_name):
-            for node in self.apic.fabricNode.list_all(role='spine'):
-                self._create_if_not_exist(self.apic.bgpRRNodePEp,
-                                          bgp_pol_name,
-                                          node['id'])
+        with self.apic.transaction(transaction) as trs:
+            self.apic.bgpInstPol.create(bgp_pol_name, transaction=trs)
+            if not self.apic.bgpRRP.get_subtree(bgp_pol_name):
+                for node in self.apic.fabricNode.list_all(role='spine'):
+                    self.apic.bgpRRNodePEp.create(bgp_pol_name, node['id'],
+                                                  transaction=trs)
 
-        self._create_if_not_exist(self.apic.bgpAsP, bgp_pol_name, asn=asn)
+            self.apic.bgpAsP.create(bgp_pol_name, asn=asn, transaction=trs)
 
-        self._create_if_not_exist(self.apic.fabricPodPGrp, pp_group_name)
-        reference = self.apic.fabricRsPodPGrpBGPRRP.get(pp_group_name)
-        if not reference['tnBgpInstPolName']:
-            self.apic.fabricRsPodPGrpBGPRRP.update(
-                pp_group_name, tnBgpInstPolName=bgp_pol_name)
+            self.apic.fabricPodPGrp.create(pp_group_name, transaction=trs)
+            reference = self.apic.fabricRsPodPGrpBGPRRP.get(pp_group_name)
+            if not reference or not reference['tnBgpInstPolName']:
+                self.apic.fabricRsPodPGrpBGPRRP.update(
+                    pp_group_name,
+                    tnBgpInstPolName=self.apic.bgpInstPol.name(bgp_pol_name),
+                    transaction=trs)
 
-        self._create_if_not_exist(self.apic.fabricPodS__ALL, p_selector_name,
-                                  type='ALL')
-        self._create_if_not_exist(self.apic.fabricRsPodPGrp, p_selector_name,
-                                  tDn=POD_POLICY_GROUP_DN_PATH % pp_group_name)
+            self.apic.fabricPodS__ALL.create(p_selector_name, type='ALL',
+                                             transaction=trs)
+            self.apic.fabricRsPodPGrp.create(
+                p_selector_name, tDn=POD_POLICY_GROUP_DN_PATH % pp_group_name,
+                transaction=trs)
 
     @staticmethod
     def group_by_ranges(i):
@@ -359,44 +275,52 @@ class APICManager(object):
             b = list(b)
             yield b[0][1], b[-1][1]
 
-    def ensure_tenant_created_on_apic(self, tenant_id):
+    def ensure_tenant_created_on_apic(self, tenant_id, transaction=None):
         """Make sure a tenant exists on the APIC."""
-        if not self.apic.fvTenant.get(tenant_id):
-            self.apic.fvTenant.create(tenant_id)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvTenant.create(tenant_id, transaction=trs)
 
-    def ensure_bd_created_on_apic(self, tenant_id, bd_id):
+    def ensure_bd_created_on_apic(self, tenant_id, bd_id,
+                                  ctx_owner=TENANT_COMMON,
+                                  transaction=None):
         """Creates a Bridge Domain on the APIC."""
-        if not self.apic.fvBD.get(tenant_id, bd_id):
-            try:
-                self.apic.fvBD.create(tenant_id, bd_id)
-                # Add default context to the BD
-                self.ensure_context_enforced(tenant_id, CONTEXT_DEFAULT)
-                self.apic.fvRsCtx.create(tenant_id, bd_id,
-                                         tnFvCtxName=CONTEXT_DEFAULT)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    # Delete the bridge domain
-                    self.apic.fvBD.delete(tenant_id, bd_id)
+        self.ensure_context_enforced(ctx_owner, CONTEXT_SHARED)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvBD.create(tenant_id, bd_id, transaction=trs)
+            # Add default context to the BD
+            self.apic.fvRsCtx.create(
+                tenant_id, bd_id,
+                tnFvCtxName=self.apic.fvCtx.name(CONTEXT_SHARED),
+                transaction=trs)
 
-    def delete_bd_on_apic(self, tenant_id, bd_id):
+    def delete_bd_on_apic(self, tenant_id, bd_id, transaction=None):
         """Deletes a Bridge Domain from the APIC."""
-        self.apic.fvBD.delete(tenant_id, bd_id)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvBD.delete(tenant_id, bd_id, transaction=trs)
 
-    def ensure_subnet_created_on_apic(self, tenant_id, bd_id, gw_ip):
+    def ensure_subnet_created_on_apic(self, tenant_id, bd_id, gw_ip,
+                                      transaction=None):
         """Creates a subnet on the APIC
 
         The gateway ip (gw_ip) should be specified as a CIDR
         e.g. 10.0.0.1/24
         """
-        if not self.apic.fvSubnet.get(tenant_id, bd_id, gw_ip):
-            self.apic.fvSubnet.create(tenant_id, bd_id, gw_ip)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvSubnet.create(tenant_id, bd_id, gw_ip, transaction=trs)
 
-    def ensure_filter_created_on_apic(self, tenant_id, filter_id):
+    def ensure_subnet_deleted_on_apic(self, tenant_id, bd_id, gw_ip,
+                                      transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvSubnet.delete(tenant_id, bd_id, gw_ip, transaction=trs)
+
+    def ensure_filter_created_on_apic(self, tenant_id, filter_id,
+                                      transaction=None):
         """Create a filter on the APIC."""
-        if not self.apic.vzFilter.get(tenant_id, filter_id):
-            self.apic.vzFilter.create(tenant_id, filter_id)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.vzFilter.create(tenant_id, filter_id, transaction=trs)
 
-    def ensure_epg_created_for_network(self, tenant_id, network_id):
+    def ensure_epg_created_for_network(self, tenant_id, network_id,
+                                       transaction=None):
         """Creates an End Point Group on the APIC.
 
         Create a new EPG on the APIC for the network spcified. This information
@@ -404,61 +328,42 @@ class APICManager(object):
         network with the EPG created.
         """
         # Check if an EPG is already present for this network
-        epg = self.db.get_epg_for_network(network_id)
-        if epg:
-            return epg
-
         # Create a new EPG on the APIC
         epg_uid = network_id
-        try:
-            self.apic.fvAEPg.create(tenant_id, self.app_profile_name, epg_uid)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvAEPg.create(tenant_id, self.app_profile_name, epg_uid,
+                                    transaction=trs)
 
             # Add bd to EPG
-            bd = self.apic.fvBD.get(tenant_id, network_id)
-            bd_name = bd['name']
+            bd_name = network_id
+            self.apic.fvBD.create(tenant_id, bd_name, transaction=trs)
 
             # create fvRsBd
             self.apic.fvRsBd.create(tenant_id, self.app_profile_name, epg_uid,
-                                    tnFvBDName=bd_name)
+                                    tnFvBDName=self.apic.fvBD.name(bd_name),
+                                    transaction=trs)
 
             # Add EPG to physical domain
-            phys_dn = self.phys_domain[DN_KEY]
             self.apic.fvRsDomAtt.create(
-                tenant_id, self.app_profile_name, epg_uid, phys_dn)
-        except (cexc.ApicResponseNotOk, KeyError):
-            with excutils.save_and_reraise_exception():
-                # Delete the EPG
-                self.apic.fvAEPg.delete(
-                    tenant_id, self.app_profile_name, epg_uid)
+                tenant_id, self.app_profile_name, epg_uid, self.phys_domain_dn,
+                transaction=trs)
+        return epg_uid
 
-        # Stick it in the DB
-        epg = self.db.write_epg_for_network(network_id, epg_uid)
-
-        return epg
-
-    def delete_epg_for_network(self, tenant_id, network_id):
+    def delete_epg_for_network(self, tenant_id, network_id, transaction=None):
         """Deletes the EPG from the APIC and removes it from the DB."""
-        # Check if an EPG is already present for this network
-        epg = self.db.get_epg_for_network(network_id)
-        if not epg:
-            return False
-
         # Delete this epg
-        self.apic.fvAEPg.delete(tenant_id, self.app_profile_name, epg.epg_id)
-        # Remove DB row
-        self.db.delete_epg(epg)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvAEPg.delete(tenant_id, self.app_profile_name,
+                                    network_id, transaction=trs)
 
-    def create_tenant_filter(self, tenant_id, fuuid, euuid=CP_ENTRY):
+    def create_tenant_filter(self, tenant_id, fuuid, transaction=None):
         """Creates a tenant filter and a generic entry under it."""
-        try:
+        with self.apic.transaction(transaction) as trs:
             # Create a new tenant filter
-            self._create_if_not_exist(self.apic.vzFilter, tenant_id, fuuid)
+            self.apic.vzFilter.create(tenant_id, fuuid, transaction=trs)
             # Create a new entry
-            self._create_if_not_exist(self.apic.vzEntry, tenant_id, fuuid,
-                                      euuid)
-        except (cexc.ApicResponseNotOk, KeyError):
-            with excutils.save_and_reraise_exception():
-                self.apic.vzFilter.delete(tenant_id, fuuid)
+            self.apic.vzEntry.create(tenant_id, fuuid,
+                                     CP_ENTRY, transaction=trs)
 
     def get_prov_contract_for_epg(self, tenant_id, epg_id, contract_id):
         return self.apic.fvRsProv.get(
@@ -469,301 +374,310 @@ class APICManager(object):
             tenant_id, self.app_profile_name, epg_id, contract_id)
 
     def set_contract_for_epg(self, tenant_id, epg_id,
-                             contract_id, provider=False):
+                             contract_id, provider=False, transaction=None):
         """Set the contract for an EPG.
 
         By default EPGs are consumers of a contract.
         Set provider flag to True for the EPG to act as a provider.
         """
-        if provider:
-            try:
+        with self.apic.transaction(transaction) as trs:
+            if provider:
                 self.apic.fvRsProv.create(
-                    tenant_id, self.app_profile_name, epg_id, contract_id)
-                self.db.set_provider_contract(epg_id)
-            except (cexc.ApicResponseNotOk, KeyError):
-                with excutils.save_and_reraise_exception():
-                    self.apic.fvRsProv.delete(
-                        tenant_id, self.app_profile_name, epg_id, contract_id)
-        else:
-            self.apic.fvRsCons.create(
-                tenant_id, self.app_profile_name, epg_id, contract_id)
+                    tenant_id, self.app_profile_name, epg_id, contract_id,
+                    transaction=trs)
+            else:
+                self.apic.fvRsCons.create(
+                    tenant_id, self.app_profile_name, epg_id, contract_id,
+                    transaction=trs)
 
     def delete_contract_for_epg(self, tenant_id, epg_id,
-                                contract_id, provider=False):
+                                contract_id, provider=False, transaction=None):
         """Delete the contract for an End Point Group.
 
         Check if the EPG was a provider and attempt to grab another contract
         consumer from the DB and set that as the new contract provider.
         """
-        if provider:
-            self.apic.fvRsProv.delete(
-                tenant_id, self.app_profile_name, epg_id, contract_id)
-            self.db.unset_provider_contract(epg_id)
-        else:
-            self.apic.fvRsCons.delete(
-                tenant_id, self.app_profile_name, epg_id, contract_id)
+        with self.apic.transaction(transaction) as trs:
+            if provider:
+                self.apic.fvRsProv.delete(
+                    tenant_id, self.app_profile_name, epg_id, contract_id,
+                    transaction=trs)
+            else:
+                self.apic.fvRsCons.delete(
+                    tenant_id, self.app_profile_name, epg_id, contract_id,
+                    transaction=trs)
 
     def get_router_contract(self, router_id, owner=TENANT_COMMON,
                             suuid=CP_SUBJ, iuuid=CP_INTERFACE,
-                            fuuid=CP_FILTER):
+                            fuuid=CP_FILTER, transaction=None):
         """Creates a tenant contract for router
 
         Create a tenant contract if one doesn't exist. Also create a
         subject, filter and entry and set the filters to allow all
         protocol traffic on all ports
         """
-        contract = self.db.get_contract_for_router(router_id)
-        cuuid = uuid.uuid4() if not contract else contract.contract_id
-        try:
+        cuuid = 'contract-%s' % router_id.uid
+        with self.apic.transaction(transaction) as trs:
             # Create contract
             scope = SCOPE_GLOBAL if owner == TENANT_COMMON else SCOPE_TENANT
-            self._create_if_not_exist(self.apic.vzBrCP, owner, cuuid,
-                                      scope=scope)
-
+            self.apic.vzBrCP.create(owner, cuuid, scope=scope)
             # Create subject
-            self._create_if_not_exist(self.apic.vzSubj, owner, cuuid,
-                                      suuid)
+            self.apic.vzSubj.create(owner, cuuid, suuid, transaction=trs)
             # Create filter and entry
-            self.create_tenant_filter(owner, fuuid)
-            self._create_if_not_exist(self.apic.vzRsSubjFiltAtt, owner,
-                                      cuuid, suuid, fuuid)
+            self.create_tenant_filter(owner, fuuid, transaction=trs)
+            self.apic.vzRsSubjFiltAtt.create(owner, cuuid, suuid, fuuid,
+                                             transaction=trs)
             # Create contract interface
-            self._create_if_not_exist(self.apic.vzCPIf, owner, iuuid)
+            self.apic.vzCPIf.create(owner, iuuid, transaction=trs)
             self.apic.vzRsIf.create(owner, iuuid,
-                                    tDn=CP_PATH_DN % (owner, cuuid))
-            # Store contract in DB
-            if not contract:
-                contract = self.db.write_contract_for_router(owner, router_id,
-                                                             cuuid, fuuid)
-        except (cexc.ApicResponseNotOk, KeyError):
-            with excutils.save_and_reraise_exception():
-                # Delete tenant contract
-                self.apic.vzBrCP.delete(owner, cuuid)
+                                    tDn=CP_PATH_DN % (owner, cuuid),
+                                    transaction=trs)
+        self.db.update_contract_for_router(owner, router_id)
+        return cuuid
 
-        return contract
-
-    def delete_router_contract(self, router_id):
+    def delete_router_contract(self, router_id, transaction=None):
         """Delete the contract related to a given Router."""
         contract = self.db.get_contract_for_router(router_id)
         if contract:
-            self.apic.vzBrCP.delete(contract.tenant_id, contract.contract_id)
+            with self.apic.transaction(transaction) as trs:
+                self.apic.vzBrCP.delete(contract.tenant_id,
+                                        'contract-%s' % router_id.uid,
+                                        transaction=trs)
             self.db.delete_contract_for_router(router_id)
 
-    def ensure_context_unenforced(self, tenant_id, ctx_id):
+    def ensure_context_unenforced(self, tenant_id, ctx_id, transaction=None):
         """Set the specified tenant's context to unenforced."""
-        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
-        if not ctx:
+        with self.apic.transaction(transaction) as trs:
             self.apic.fvCtx.create(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
-        elif ctx['pcEnfPref'] != CONTEXT_UNENFORCED:
-            self.apic.fvCtx.update(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED)
+                tenant_id, ctx_id, pcEnfPref=CONTEXT_UNENFORCED,
+                transaction=trs)
 
-    def ensure_context_enforced(self, tenant_id=TENANT_COMMON,
-                                ctx_id=CONTEXT_SHARED):
+    def ensure_context_enforced(self, owner=TENANT_COMMON,
+                                ctx_id=CONTEXT_SHARED, transaction=None):
         """Set the specified tenant's context to enforced."""
-        ctx = self.apic.fvCtx.get(tenant_id, ctx_id)
-        if not ctx:
+        with self.apic.transaction(transaction) as trs:
             self.apic.fvCtx.create(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
-        elif ctx['pcEnfPref'] != CONTEXT_ENFORCED:
-            self.apic.fvCtx.update(
-                tenant_id, ctx_id, pcEnfPref=CONTEXT_ENFORCED)
+                owner, ctx_id, pcEnfPref=CONTEXT_ENFORCED, transaction=trs)
 
-    def ensure_context_any_contract(self, tenant_id, ctx_id, contract_id):
+    def ensure_context_any_contract(self, tenant_id, ctx_id, contract_id,
+                                    transaction=None):
         """Set the specified tenant's context to enforced."""
-        vzany = self.apic.vzAny.get(tenant_id, ctx_id)
-        if not vzany:
-            vzany = self.apic.vzAny.create(tenant_id, ctx_id)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.vzAny.create(tenant_id, ctx_id, transaction=trs)
+            self.apic.vzRsAnyToProv.create(tenant_id, ctx_id, contract_id,
+                                           transaction=trs)
+            self.apic.vzRsAnyToCons.create(tenant_id, ctx_id, contract_id,
+                                           transaction=trs)
 
-        provider = self.apic.vzRsAnyToProv.get(
-            tenant_id, ctx_id, contract_id)
-        if not provider:
-            self.apic.vzRsAnyToProv.create(
-                tenant_id, ctx_id, contract_id)
+    def _change_tenant_contract_scope(self, router_id, scope,
+                                      transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            contract = self.db.get_contract_for_router(router_id)
+            self.apic.vzBrCP.update(contract.tenant_id,
+                                    'contract-%s' % router_id.uid,
+                                    scope=scope, transactio=trs)
 
-        consumer = self.apic.vzRsAnyToCons.get(
-            tenant_id, ctx_id, contract_id)
-        if not consumer:
-            self.apic.vzRsAnyToCons.create(
-                tenant_id, ctx_id, contract_id)
-
-    def make_tenant_contract_global(self, router_id):
+    def make_tenant_contract_global(self, router_id, transaction=None):
         """Mark the tenant contract's scope to global."""
-        contract = self.db.get_contract_for_router(router_id)
-        self.apic.vzBrCP.update(contract.tenant_id, contract.contract_id,
-                                scope=SCOPE_GLOBAL)
+        self._change_tenant_contract_scope(router_id, SCOPE_GLOBAL,
+                                           transaction)
 
-    def make_tenant_contract_local(self, router_id):
+    def make_tenant_contract_local(self, router_id, transaction=None):
         """Mark the tenant contract's scope to tenant."""
-        contract = self.db.get_contract_for_router(router_id)
-        self.apic.vzBrCP.update(contract.tenant_id, contract.contract_id,
-                                scope=SCOPE_TENANT)
+        self._change_tenant_contract_scope(router_id, SCOPE_TENANT,
+                                           transaction)
 
     def ensure_path_created_for_port(self, tenant_id, network_id,
-                                     host_id, encap):
+                                     host_id, encap, transaction=None):
         """Create path attribute for an End Point Group."""
-        epg = self.ensure_epg_created_for_network(tenant_id, network_id)
-        eid = epg.epg_id
+        with self.apic.transaction(transaction) as trs:
+            eid = self.ensure_epg_created_for_network(tenant_id, network_id,
+                                                      transaction=trs)
 
-        # Get attached switch and port for this host
-        host_config = self.db.get_switch_and_port_for_host(host_id)
-        if not host_config:
-            raise cexc.ApicHostNotConfigured(host=host_id)
+            # Get attached switch and port for this host
+            host_config = self.db.get_switch_and_port_for_host(host_id)
+            if not host_config or not host_config.count():
+                raise cexc.ApicHostNotConfigured(host=host_id)
 
-        for switch, module, port in host_config:
-            self.ensure_path_binding_for_port(
-                tenant_id, eid, encap, switch, module, port)
+            for switch, module, port in host_config:
+                self.ensure_path_binding_for_port(
+                    tenant_id, eid, encap, switch, module, port,
+                    transaction=trs)
 
     def ensure_path_binding_for_port(self, tenant_id, epg_id, encap,
-                                     switch, module, port):
+                                     switch, module, port, transaction=None):
         # Verify that it exists, or create it if required
-        encap = 'vlan-' + str(encap)
-        pdn = PORT_DN_PATH % (switch, module, port)
-        patt = self.apic.fvRsPathAtt.get(
-            tenant_id, self.app_profile_name, epg_id, pdn)
-        if not patt:
+        with self.apic.transaction(transaction) as trs:
+            encap = 'vlan-' + str(encap)
+            pdn = PORT_DN_PATH % (switch, module, port)
             self.apic.fvRsPathAtt.create(
                 tenant_id, self.app_profile_name, epg_id, pdn,
                 encap=encap, mode="regular",
-                instrImedcy="immediate")
+                instrImedcy="immediate", transaction=trs)
 
-    def ensure_vlans_created_for_host(self, host):
-        segments = self.db.get_tenant_network_vlan_for_host(host)
-        for tenant, network, encap in segments:
-            tenant_id = self.db.get_apic_name(
-                tenant, apic_mapper.NAME_TYPE_TENANT)[0]
-            network_id = self.db.get_apic_name(
-                network, apic_mapper.NAME_TYPE_NETWORK)[0]
-            self.ensure_path_created_for_port(
-                tenant_id, network_id, host, encap)
+    def ensure_vlans_created_for_host(self, host, transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            segments = self.db.get_tenant_network_vlan_for_host(host)
+            for tenant, network, encap in segments:
+                tenant_id = self.db.get_apic_name(
+                    tenant, apic_mapper.NAME_TYPE_TENANT)[0]
+                network_id = self.db.get_apic_name(
+                    network, apic_mapper.NAME_TYPE_NETWORK)[0]
+                self.ensure_path_created_for_port(
+                    tenant_id, network_id, host, encap, transaction=trs)
+
+    def create_router(self, router_id, owner=TENANT_COMMON,
+                      context=CONTEXT_SHARED, transaction=None):
+
+        with self.apic.transaction(transaction) as trs:
+            self.get_router_contract(router_id, owner=owner,
+                                     transaction=trs)
+            self.ensure_context_enforced(owner, context, transaction=trs)
 
     def add_router_interface(self, tenant_id, router_id,
-                             network_id, owner=TENANT_COMMON,
-                             context=CONTEXT_SHARED):
+                             network_id, context=CONTEXT_SHARED,
+                             transaction=None):
+        # Create a router out of transaction, it should exist at this point
+        # anyway.
+        self.create_router(router_id)
         # Get contract and epg
-        contract = self.get_router_contract(router_id, owner=owner)
-        epg = self.ensure_epg_created_for_network(tenant_id, network_id)
+        with self.apic.transaction(transaction) as trs:
+            cid = 'contract-%s' % router_id.uid
+            eid = self.ensure_epg_created_for_network(tenant_id, network_id,
+                                                      transaction=trs)
 
-        # Ensure that the router ctx exists
-        self.ensure_context_enforced(owner, context)
+            # Ensure that the router ctx exists
 
-        # update corresponding BD's ctx to this router ctx
-        bd_id = network_id
-        self.apic.fvRsCtx.update(tenant_id, bd_id, tnFvCtxName=context)
+            # update corresponding BD's ctx to this router ctx
+            bd_id = network_id
+            self.apic.fvRsCtx.create(
+                tenant_id, bd_id, tnFvCtxName=self.apic.fvCtx.name(context),
+                transaction=trs)
+            # set the EPG to provide this contract
+            self.set_contract_for_epg(tenant_id, eid, cid, True,
+                                      transaction=trs)
 
-        # set the EPG to provide this contract
-        if not self.get_prov_contract_for_epg(tenant_id, epg.epg_id,
-                                              contract.contract_id):
-            self.set_contract_for_epg(
-                tenant_id, epg.epg_id, contract.contract_id, True)
-
-        # set the EPG to consume this contract
-        if not self.get_cons_contract_for_epg(tenant_id, epg.epg_id,
-                                              contract.contract_id):
-            self.set_contract_for_epg(
-                tenant_id, epg.epg_id, contract.contract_id)
+            # set the EPG to consume this contract
+            self.set_contract_for_epg(tenant_id, eid, cid, transaction=trs)
 
     def remove_router_interface(self, tenant_id, router_id,
-                                network_id, owner=TENANT_COMMON,
-                                context=CONTEXT_SHARED):
+                                network_id, context=CONTEXT_SHARED,
+                                transaction=None):
         # Get contract and epg
-        contract = self.get_router_contract(router_id, owner=owner)
-        epg = self.ensure_epg_created_for_network(tenant_id, network_id)
+        with self.apic.transaction(transaction) as trs:
+            cid = 'contract-%s' % router_id.uid
+            eid = self.ensure_epg_created_for_network(tenant_id, network_id,
+                                                      transaction=trs)
 
-        # Delete contract for this epg
-        self.delete_contract_for_epg(
-            tenant_id, epg.epg_id, contract.contract_id, epg.provider)
+            # Delete contract for this epg
+            self.delete_contract_for_epg(tenant_id, eid, cid, True,
+                                         transaction=trs)
+            self.delete_contract_for_epg(tenant_id, eid, cid, False,
+                                         transaction=trs)
 
-        # set the BDs' ctx to default
-        bd_id = network_id
-        self.apic.fvRsCtx.update(
-            tenant_id, bd_id, tnFvCtxName=context)
+            # set the BDs' ctx to default
+            bd_id = network_id
+            self.apic.fvRsCtx.create(
+                tenant_id, bd_id, tnFvCtxName=self.apic.fvCtx.name(context),
+                transaction=trs)
 
-    def delete_router(self, router_id):
-        self.delete_router_contract(router_id)
+    def delete_router(self, router_id, transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            self.delete_router_contract(router_id, transaction=trs)
 
-    def delete_external_routed_network(self, network_id, owner=TENANT_COMMON):
-        self.apic.l3extRsEctx.delete(owner, network_id)
+    def delete_external_routed_network(self, network_id, owner=TENANT_COMMON,
+                                       transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            self.apic.l3extOut.delete(owner, network_id, transaction=trs)
 
     def ensure_external_routed_network_created(self, network_id,
                                                owner=TENANT_COMMON,
-                                               context=CONTEXT_SHARED):
+                                               context=CONTEXT_SHARED,
+                                               transaction=None):
         """Creates a L3 External context on the APIC."""
-        self._create_if_not_exist(self.apic.l3extOut, owner, network_id)
-        # Link external context to the internal router ctx
-        self.apic.l3extRsEctx.update(owner,
-                                     network_id, tnFvCtxName=context)
+        with self.apic.transaction(transaction) as trs:
+            # Link external context to the internal router ctx
+            self.apic.l3extRsEctx.create(
+                owner, network_id, tnFvCtxName=self.apic.fvCtx.name(context),
+                transaction=trs)
 
     def ensure_logical_node_profile_created(self, network_id,
                                             switch, module, port, encap,
-                                            address, owner=TENANT_COMMON):
+                                            address, owner=TENANT_COMMON,
+                                            transaction=None):
         """Creates Logical Node Profile for External Network in APIC."""
-        try:
-            self._create_if_not_exist(self.apic.l3extLNodeP, owner, network_id,
-                                      EXT_NODE)
+        with self.apic.transaction(transaction) as trs:
             # TODO(ivar): default value for router id
-            self._create_if_not_exist(
-                self.apic.l3extRsNodeL3OutAtt, owner, network_id, EXT_NODE,
-                NODE_DN_PATH % switch, rtrId='1.0.0.1')
-            self._create_if_not_exist(
-                self.apic.l3extRsPathL3OutAtt, owner, network_id, EXT_NODE,
+            self.apic.l3extRsNodeL3OutAtt.create(
+                owner, network_id, EXT_NODE,
+                NODE_DN_PATH % switch, rtrId='1.0.0.1', transaction=trs)
+            self.apic.l3extRsPathL3OutAtt.create(
+                owner, network_id, EXT_NODE,
                 EXT_INTERFACE, PORT_DN_PATH % (switch, module, port),
                 encap=encap or 'unknown', addr=address,
-                ifInstT='l3-port' if not encap else 'sub-interface')
-
-        except (cexc.ApicResponseNotOk, KeyError):
-            with excutils.save_and_reraise_exception():
-                self.apic.l3extLNodeP.delete(owner, network_id,
-                                             EXT_NODE)
+                ifInstT='l3-port' if not encap else 'sub-interface',
+                transaction=trs)
 
     def ensure_static_route_created(self, network_id, switch,
                                     next_hop, subnet='0.0.0.0/0',
-                                    owner=TENANT_COMMON):
+                                    owner=TENANT_COMMON, transaction=None):
         """Add static route to existing External Routed Network."""
-        self._create_if_not_exist(self.apic.ipNexthopP, owner, network_id,
-                                  EXT_NODE, NODE_DN_PATH % switch, subnet,
-                                  next_hop)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.ipNexthopP.create(
+                owner, network_id, EXT_NODE, NODE_DN_PATH % switch, subnet,
+                next_hop, transaction=trs)
 
     def ensure_external_epg_created(self, router_id, subnet='0.0.0.0/0',
-                                    owner=TENANT_COMMON):
+                                    owner=TENANT_COMMON, transaction=None):
         """Add EPG to existing External Routed Network."""
-        self._create_if_not_exist(self.apic.l3extSubnet, owner, router_id,
-                                  EXT_EPG, subnet)
+        with self.apic.transaction(transaction) as trs:
+            self.apic.l3extSubnet.create(owner, router_id, EXT_EPG, subnet,
+                                         transaction=trs)
 
     def ensure_external_epg_consumed_contract(self, network_id, contract_id,
-                                              owner=TENANT_COMMON):
-        self._create_if_not_exist(self.apic.fvRsCons__Ext, owner,
-                                  network_id, EXT_EPG, contract_id)
+                                              owner=TENANT_COMMON,
+                                              transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvRsCons__Ext.create(owner, network_id, EXT_EPG,
+                                           contract_id, transaction=trs)
 
     def ensure_external_epg_provided_contract(self, network_id, contract_id,
-                                              owner=TENANT_COMMON):
-        self._create_if_not_exist(self.apic.fvRsProv__Ext, owner,
-                                  network_id, EXT_EPG, contract_id)
+                                              owner=TENANT_COMMON,
+                                              transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            self.apic.fvRsProv__Ext.create(owner, network_id, EXT_EPG,
+                                           contract_id, transaction=trs)
 
     def delete_external_epg_contract(self, router_id, network_id,
-                                     owner=TENANT_COMMON):
+                                     transaction=None):
         contract = self.db.get_contract_for_router(router_id)
-        if contract:
-            self.apic.fvRsCons__Ext.delete(owner, network_id, EXT_EPG,
-                                           contract.contract_id)
-            self.apic.fvRsProv__Ext.delete(owner, network_id, EXT_EPG,
-                                           contract.contract_id)
+        with self.apic.transaction(transaction) as trs:
+            if contract:
+                self.apic.fvRsCons__Ext.delete(contract.tenant_id, network_id,
+                                               EXT_EPG,
+                                               'contract-%s' % router_id.uid,
+                                               transaction=trs)
+                self.apic.fvRsProv__Ext.delete(contract.tenant_id, network_id,
+                                               EXT_EPG,
+                                               'contract-%s' % router_id.uid,
+                                               transaction=trs)
 
     def ensure_external_routed_network_deleted(self, network_id,
-                                               owner=TENANT_COMMON):
-        self.apic.l3extOut.delete(owner, network_id)
+                                               owner=TENANT_COMMON,
+                                               transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            self.apic.l3extOut.delete(owner, network_id, transaction=trs)
 
-    def add_hostlink(self,
-                     host, ifname, ifmac,
-                     switch, module, port):
+    def add_hostlink(self, host, ifname, ifmac, switch, module, port,
+                     transaction=None):
         prev_links = self.db.get_hostlinks_for_host_switchport(
             host, switch, module, port)
         self.db.add_hostlink(host, ifname, ifmac,
                              switch, module, port)
         if not prev_links:
-            self.ensure_infra_created_for_switch(switch)
-            self.ensure_vlans_created_for_host(host)
+            with self.apic.transaction(transaction) as trs:
+                self.ensure_infra_created_for_switch(switch, transaction=trs)
+                self.ensure_vlans_created_for_host(host, transaction=trs)
 
     def remove_hostlink(self,
                         host, ifname, ifmac,
@@ -791,7 +705,7 @@ class APICManager(object):
         self.apic.infraAccPortGrp.delete(func_name)
 
         # delete switch profile for switches in DB
-        for switch_id in self.db.get_nodes_with_port_profile():
+        for switch_id in self.db.get_switches():
             self.apic.infraNodeP.delete(switch_id)
 
         # clean db

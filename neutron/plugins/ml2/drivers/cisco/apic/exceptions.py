@@ -45,3 +45,8 @@ class ApicSessionNotLoggedIn(exceptions.NotAuthorized):
 class ApicHostNotConfigured(exceptions.NotAuthorized):
     """The switch and port for the specified host are not configured."""
     message = _("The switch and port for host '%(host)s' are not configured")
+
+
+class ApicInvalidTransactionMultipleRoot(exceptions.NeutronException):
+    """The switch and port for the specified host are not configured."""
+    message = _("An apic transaction cannot start from multiple root nodes")
