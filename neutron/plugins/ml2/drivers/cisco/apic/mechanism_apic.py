@@ -21,15 +21,16 @@ from oslo.config import cfg
 
 from neutron.common import constants as n_constants
 from neutron.extensions import portbindings
+from neutron.openstack.common import lockutils
 from neutron.openstack.common import log
 from neutron.plugins.common import constants
 from neutron.plugins.ml2 import driver_api as api
-
 from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
 from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper
 from neutron.plugins.ml2.drivers.cisco.apic import apic_sync
 from neutron.plugins.ml2.drivers.cisco.apic import config
 from neutron.plugins.ml2.drivers.cisco.apic import exceptions as exc
+from neutron.plugins.ml2 import models
 
 LOG = log.getLogger(__name__)
 
@@ -84,17 +85,7 @@ class APICMechanismDriver(api.MechanismDriver):
             return f(inst, *args, **kwargs)
         return inner
 
-    def _perform_port_operations(self, context):
-        # Get port
-        port = context.current
-        # Check if a compute port
-        if port.get('device_owner', '').startswith('compute'):
-            self._perform_path_port_operations(context, port)
-        elif port.get('device_owner') == n_constants.DEVICE_OWNER_ROUTER_GW:
-            self._perform_gw_port_operations(context, port)
-        elif port.get('device_owner') == n_constants.DEVICE_OWNER_DHCP:
-            self._perform_path_port_operations(context, port)
-
+    @lockutils.synchronized('portlock')
     def _perform_path_port_operations(self, context, port):
         # Get network
         network_id = context.network.current['id']
@@ -150,15 +141,45 @@ class APICMechanismDriver(api.MechanismDriver):
                 self.apic_manager.ensure_external_epg_provided_contract(
                     anetwork_id, cid, transaction=trs)
 
-    def _delete_contract_if_gateway(self, context):
+    def _perform_port_operations(self, context):
+        # Get port
         port = context.current
-        if port.get('device_owner') == n_constants.DEVICE_OWNER_ROUTER_GW:
-            network_id = self.name_mapper.network(
-                context, context.network.current['id'])
-            arouter_id = self.name_mapper.router(context,
-                                                 port.get('device_id'))
-            self.apic_manager.delete_external_epg_contract(arouter_id,
-                                                           network_id)
+        # Check if a compute port
+        if port.get('device_owner', '').startswith('compute'):
+            self._perform_path_port_operations(context, port)
+        elif port.get('device_owner') == n_constants.DEVICE_OWNER_ROUTER_GW:
+            self._perform_gw_port_operations(context, port)
+        elif port.get('device_owner') == n_constants.DEVICE_OWNER_DHCP:
+            self._perform_path_port_operations(context, port)
+
+    def _delete_contract(self, context):
+        port = context.current
+        network_id = self.name_mapper.network(
+            context, context.network.current['id'])
+        arouter_id = self.name_mapper.router(context,
+                                             port.get('device_id'))
+        self.apic_manager.delete_external_epg_contract(arouter_id,
+                                                       network_id)
+
+    def _get_active_path_count(self, context):
+        return context._plugin_context.session.query(models.PortBinding).\
+            filter_by(host=context.current.get(portbindings.HOST_ID),
+                      segment=context._binding.segment).count()
+
+    @lockutils.synchronized('portlock')
+    def _delete_port_path(self, context, atenant_id, anetwork_id):
+        if not self._get_active_path_count(context):
+            self.apic_manager.ensure_path_deleted_for_port(
+                atenant_id, anetwork_id,
+                context.current.get(portbindings.HOST_ID))
+
+    def _delete_path_if_last(self, context):
+        if not self._get_active_path_count(context):
+            tenant_id = context.current['tenant_id']
+            atenant_id = self.name_mapper.tenant(context, tenant_id)
+            network_id = context.network.current['id']
+            anetwork_id = self.name_mapper.network(context, network_id)
+            self._delete_port_path(context, atenant_id, anetwork_id)
 
     def _get_subnet_info(self, context, subnet):
         tenant_id = subnet['tenant_id']
@@ -194,7 +215,14 @@ class APICMechanismDriver(api.MechanismDriver):
         self._perform_port_operations(context)
 
     def delete_port_postcommit(self, context):
-        self._delete_contract_if_gateway(context)
+        port = context.current
+        # Check if a compute port
+        if port.get('device_owner', '').startswith('compute'):
+            self._delete_path_if_last(context)
+        elif port.get('device_owner') == n_constants.DEVICE_OWNER_ROUTER_GW:
+            self._delete_contract(context)
+        elif port.get('device_owner') == n_constants.DEVICE_OWNER_DHCP:
+            self._delete_path_if_last(context)
 
     @sync_init
     def create_network_postcommit(self, context):

@@ -502,6 +502,17 @@ class APICManager(object):
                     tenant_id, eid, encap, switch, module, port,
                     transaction=trs)
 
+    def ensure_path_deleted_for_port(self, tenant_id, network_id, host_id,
+                                     transaction=None):
+        with self.apic.transaction(transaction) as trs:
+            host_config = self.db.get_switch_and_port_for_host(host_id)
+            if not host_config or not host_config.count():
+                raise cexc.ApicHostNotConfigured(host=host_id)
+            for switch, module, port in host_config:
+                pdn = PORT_DN_PATH % (switch, module, port)
+                self.apic.fvRsPathAtt.delete(tenant_id, self.app_profile_name,
+                                             network_id, pdn, transaction=trs)
+
     def ensure_path_binding_for_port(self, tenant_id, epg_id, encap,
                                      switch, module, port, transaction=None):
         # Verify that it exists, or create it if required
