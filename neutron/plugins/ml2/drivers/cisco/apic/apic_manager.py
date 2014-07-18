@@ -425,8 +425,6 @@ class APICManager(object):
             self.apic.vzSubj.create(owner, cuuid, suuid, transaction=trs)
             # Create filter and entry
             self.create_tenant_filter(owner, fuuid, transaction=trs)
-            self.apic.vzRsSubjFiltAtt.create(owner, cuuid, suuid, fuuid,
-                                             transaction=trs)
             # Create contract interface
             self.apic.vzCPIf.create(owner, iuuid, transaction=trs)
             self.apic.vzRsIf.create(owner, iuuid,
@@ -534,12 +532,21 @@ class APICManager(object):
                                      transaction=trs)
             self.ensure_context_enforced(owner, context, transaction=trs)
 
+    def enable_router(self, router_id, owner=TENANT_COMMON, suuid=CP_SUBJ,
+                      fuuid=CP_FILTER, transaction=None):
+        cuuid = 'contract-%s' % router_id.uid
+        self.apic.vzRsSubjFiltAtt.create(owner, cuuid, suuid, fuuid,
+                                         transaction=transaction)
+
+    def disable_router(self, router_id, owner=TENANT_COMMON, suuid=CP_SUBJ,
+                       fuuid=CP_FILTER, transaction=None):
+        cuuid = 'contract-%s' % router_id.uid
+        self.apic.vzRsSubjFiltAtt.delete(owner, cuuid, suuid, fuuid,
+                                         transaction=transaction)
+
     def add_router_interface(self, tenant_id, router_id,
                              network_id, context=CONTEXT_SHARED,
                              transaction=None):
-        # Create a router out of transaction, it should exist at this point
-        # anyway.
-        self.create_router(router_id)
         # Get contract and epg
         with self.apic.transaction(transaction) as trs:
             cid = 'contract-%s' % router_id.uid

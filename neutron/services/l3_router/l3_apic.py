@@ -75,6 +75,11 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     def add_router_interface_postcommit(self, context, router_id,
                                         interface_info):
+        # Create router / update its state first
+        router = self.get_router(context, router_id)
+        self.update_router_postcommit(context, router)
+
+        # Add router interface
         if 'subnet_id' in interface_info:
             subnet = self.get_subnet(context, interface_info['subnet_id'])
             network_id = subnet['network_id']
@@ -117,15 +122,29 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
             arouter_id = router_id and self.name_mapper.router(ctx, router_id)
         self.manager.delete_router(arouter_id)
 
-    # Router API
+    def update_router_postcommit(self, context, router):
+        context._plugin = self
+        with mapper_context(context) as ctx:
+            arouter_id = router['id'] and self.name_mapper.router(ctx,
+                                                                  router['id'])
+        with self.manager.apic.transaction() as trs:
+            self.manager.create_router(arouter_id, transaction=trs)
+            if router['admin_state_up']:
+                self.manager.enable_router(arouter_id, transaction=trs)
+            else:
+                self.manager.disable_router(arouter_id, transaction=trs)
 
+    # Router API
     @sync_init
     def create_router(self, *args, **kwargs):
         return super(ApicL3ServicePlugin, self).create_router(*args, **kwargs)
 
     @sync_init
-    def update_router(self, *args, **kwargs):
-        return super(ApicL3ServicePlugin, self).update_router(*args, **kwargs)
+    def update_router(self, context, id, router):
+        result = super(ApicL3ServicePlugin, self).update_router(context,
+                                                                id, router)
+        self.update_router_postcommit(context, result)
+        return result
 
     @sync_init
     def get_router(self, *args, **kwargs):
@@ -140,7 +159,6 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         return super(ApicL3ServicePlugin, self).get_routers_count(*args,
                                                                   **kwargs)
 
-    @sync_init
     def delete_router(self, context, router_id):
         result = super(ApicL3ServicePlugin, self).delete_router(context,
                                                                 router_id)
@@ -164,7 +182,6 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                     context, router_id, interface_info)
         return result
 
-    @sync_init
     def remove_router_interface(self, context, router_id, interface_info):
         self.remove_router_interface_precommit(context, router_id,
                                                interface_info)

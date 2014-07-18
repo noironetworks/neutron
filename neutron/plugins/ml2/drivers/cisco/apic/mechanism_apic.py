@@ -29,7 +29,7 @@ from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
 from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper
 from neutron.plugins.ml2.drivers.cisco.apic import apic_sync
 from neutron.plugins.ml2.drivers.cisco.apic import config
-
+from neutron.plugins.ml2.drivers.cisco.apic import exceptions as exc
 
 LOG = log.getLogger(__name__)
 
@@ -160,15 +160,39 @@ class APICMechanismDriver(api.MechanismDriver):
             self.apic_manager.delete_external_epg_contract(arouter_id,
                                                            network_id)
 
+    def _get_subnet_info(self, context, subnet):
+        tenant_id = subnet['tenant_id']
+        network_id = subnet['network_id']
+        network = context._plugin.get_network(context._plugin_context,
+                                              network_id)
+        if not network.get('router:external'):
+            gateway_ip = subnet['gateway_ip']
+            cidr = netaddr.IPNetwork(subnet['cidr'])
+            netmask = str(cidr.prefixlen)
+            gateway_ip = gateway_ip + '/' + netmask
+
+            # Convert to APIC IDs
+            tenant_id = self.name_mapper.tenant(context, tenant_id)
+            network_id = self.name_mapper.network(context, network_id)
+            return tenant_id, network_id, gateway_ip
+
     @sync_init
     def create_port_postcommit(self, context):
         self._perform_port_operations(context)
+
+    def update_port_precommit(self, context):
+        orig = context.original
+        curr = context.current
+        if (orig['device_owner'] != curr['device_owner']
+                or orig['device_id'] != curr['device_id']):
+            raise exc.ApicOperationNotSupported(
+                resource='Port', msg='Port device owner and id cannot be'
+                                     ' changed.')
 
     @sync_init
     def update_port_postcommit(self, context):
         self._perform_port_operations(context)
 
-    @sync_init
     def delete_port_postcommit(self, context):
         self._delete_contract_if_gateway(context)
 
@@ -194,7 +218,6 @@ class APICMechanismDriver(api.MechanismDriver):
     def update_network_postcommit(self, context):
         super(APICMechanismDriver, self).update_network_postcommit(context)
 
-    @sync_init
     def delete_network_postcommit(self, context):
         if not context.current.get('router:external'):
             tenant_id = context.current['tenant_id']
@@ -219,44 +242,32 @@ class APICMechanismDriver(api.MechanismDriver):
 
     @sync_init
     def create_subnet_postcommit(self, context):
-        tenant_id = context.current['tenant_id']
-        network_id = context.current['network_id']
-        network = context._plugin.get_network(context._plugin_context,
-                                              network_id)
-        if not network.get('router:external'):
-            gateway_ip = context.current['gateway_ip']
-            cidr = netaddr.IPNetwork(context.current['cidr'])
-            netmask = str(cidr.prefixlen)
-            gateway_ip = gateway_ip + '/' + netmask
-
-            # Convert to APIC IDs
-            tenant_id = self.name_mapper.tenant(context, tenant_id)
-            network_id = self.name_mapper.network(context, network_id)
-
+        info = self._get_subnet_info(context, context.current)
+        if info:
+            tenant_id, network_id, gateway_ip = info
             # Create subnet on BD
             self.apic_manager.ensure_subnet_created_on_apic(
                 tenant_id, network_id, gateway_ip)
 
     @sync_init
     def update_subnet_postcommit(self, context):
-        super(APICMechanismDriver, self).update_subnet_postcommit(context)
+        if context.current['gateway_ip'] != context.original['gateway_ip']:
+            info = self._get_subnet_info(context, context.original)
+            if info:
+                tenant_id, network_id, gateway_ip = info
+                # Delete subnet
+                self.apic_manager.ensure_subnet_deleted_on_apic(
+                    tenant_id, network_id, gateway_ip)
+            info = self._get_subnet_info(context, context.current)
+            if info:
+                tenant_id, network_id, gateway_ip = info
+                # Delete subnet
+                self.apic_manager.ensure_subnet_created_on_apic(
+                    tenant_id, network_id, gateway_ip)
 
-    @sync_init
     def delete_subnet_postcommit(self, context):
-        tenant_id = context.current['tenant_id']
-        network_id = context.current['network_id']
-        network = context._plugin.get_network(context._plugin_context,
-                                              network_id)
-        if not network.get('router:external'):
-            gateway_ip = context.current['gateway_ip']
-            cidr = netaddr.IPNetwork(context.current['cidr'])
-            netmask = str(cidr.prefixlen)
-            gateway_ip = gateway_ip + '/' + netmask
-
-            # Convert to APIC IDs
-            tenant_id = self.name_mapper.tenant(context, tenant_id)
-            network_id = self.name_mapper.network(context, network_id)
-
-            # Create subnet on BD
+        info = self._get_subnet_info(context, context.current)
+        if info:
+            tenant_id, network_id, gateway_ip = info
             self.apic_manager.ensure_subnet_deleted_on_apic(
                 tenant_id, network_id, gateway_ip)

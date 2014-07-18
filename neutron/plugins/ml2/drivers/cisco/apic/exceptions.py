@@ -32,6 +32,10 @@ class ApicResponseNotOk(exceptions.NeutronException):
                 "APIC error code %(err_code)s: %(err_text)s")
 
 
+class ApicOperationNotSupported(exceptions.BadRequest):
+    pass
+
+
 class ApicResponseNoCookie(exceptions.NeutronException):
     """A response from the APIC did not contain an expected cookie."""
     message = _("APIC failed to provide cookie for %(request)s request")
