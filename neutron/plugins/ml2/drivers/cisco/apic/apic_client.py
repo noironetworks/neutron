@@ -125,11 +125,15 @@ class ManagedObjectClass(object):
         'infraRsAccBaseGrp': ManagedObjectName('infraHPortS', 'rsaccBaseGrp'),
         'infraFuncP': ManagedObjectName('infraInfra', 'funcprof'),
         'infraAccPortGrp': ManagedObjectName('infraFuncP', 'accportgrp-%s'),
+        'infraAccBndlGrp': ManagedObjectName('infraFuncP', 'accbundle-%s'),
         'infraRsAttEntP': ManagedObjectName('infraAccPortGrp', 'rsattEntP'),
+        'infraRsAttEntP2': ManagedObjectName('infraAccBndlGrp', 'rsattEntP'),
+        'infraRsLacpPol': ManagedObjectName('infraAccBndlGrp', 'rslacpPol'),
         'infraAttEntityP': ManagedObjectName('infraInfra', 'attentp-%(name)s',
                                              name_fmt='__%s'),
         'infraRsDomP': ManagedObjectName('infraAttEntityP', 'rsdomP-[%s]'),
         'infraRsVlanNs': ManagedObjectName('physDomP', 'rsvlanNs'),
+        'lacpLagPol': ManagedObjectName('infraInfra', 'lacplagp-%s'),
 
         'fvnsVlanInstP': ManagedObjectName('infraInfra', 'vlanns-%s-%s'),
         'fvnsEncapBlk__vlan': ManagedObjectName('fvnsVlanInstP',
@@ -186,6 +190,9 @@ class ManagedObjectClass(object):
     def __init__(self, mo_class):
         self.klass = mo_class
         self.klass_name = mo_class.split('__')[0]
+        if (self.klass_name[-1:] == '2'):
+            self.klass_name = self.klass_name[:-1]
+
         mo = self.supported_mos[mo_class]
         self.container = mo.container
         if mo.name_fmt:

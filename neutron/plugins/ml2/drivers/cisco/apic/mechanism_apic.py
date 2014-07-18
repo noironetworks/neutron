@@ -43,6 +43,7 @@ class APICMechanismDriver(api.MechanismDriver):
         network_config = {
             'vlan_ranges': cfg.CONF.ml2_type_vlan.network_vlan_ranges,
             'switch_dict': config.switch_dictionary(),
+            'vpc_dict': config.vpc_dictionary(),
             'external_network_dict': config.external_network_dictionary(),
         }
         apic_system_id = cfg.CONF.apic_system_id

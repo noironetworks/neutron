@@ -246,6 +246,10 @@ class ConfigMixin(object):
                 '4/22': ['rhel03'],
             },
         }
+        self.vpc_dict = {
+            '201': '202',
+            '202': '201',
+        }
         self.external_network_dict = {
             APIC_NETWORK + '-name': {
                 'switch': APIC_EXT_SWITCH,
@@ -272,6 +276,11 @@ class DbModelMixin(object):
         self.mocked_session = mock.Mock()
         get_session = mock.patch('neutron.db.api.get_session').start()
         get_session.return_value = self.mocked_session
+
+    def mock_db_query_all_return(self, value):
+        """Mock db.session.query().all() to return value."""
+        query = self.mocked_session.query.return_value
+        query.all.return_value = value
 
     def mock_db_query_filterby_first_return(self, value):
         """Mock db.session.query().filterby().first() to return value."""

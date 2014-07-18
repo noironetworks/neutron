@@ -128,6 +128,10 @@ class ApicDbModel(object):
         return self.session.query(HostLink).filter_by(
             host=host, swid=swid, module=module, port=port).all()
 
+    def get_hostlinks_for_switchport(self, swid, module, port):
+        return self.session.query(HostLink).filter_by(
+            swid=swid, module=module, port=port).all()
+
     def delete_hostlink(self, host, ifname):
         with self.session.begin(subtransactions=True):
             profile = self.session.query(HostLink).filter_by(
@@ -194,13 +198,6 @@ class ApicDbModel(object):
             if profile:
                 self.session.delete(profile)
                 self._flush()
-
-    @lockutils.synchronized('apic_manager_flush')
-    def clean(self):
-        self.session.query(RouterContract).delete()
-        self.session.query(HostLink).delete()
-        self.session.query(ApicName).delete()
-        self.session.flush()
 
     @lockutils.synchronized('apic_manager_flush')
     def _flush(self):

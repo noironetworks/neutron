@@ -87,14 +87,6 @@ apic_opts = [
     cfg.StrOpt('root_helper',
                default=DEFAULT_ROOT_HELPER,
                help=_("Setup root helper as rootwrap or sudo")),
-    cfg.BoolOpt('apic_clear_node_profiles',
-                default=False,
-                help=_("Clear the node profiles on APIC at startup "
-                       "(for testing)")),
-    cfg.BoolOpt('apic_clear_driver_tables',
-                default=False,
-                help=_("Clear the apic specific db tables at startup "
-                       "(for testing)")),
     cfg.IntOpt('apic_sync_interval',
                default=0,
                help=_("Synchronization interval in seconds")),
@@ -132,6 +124,19 @@ def switch_dictionary():
             switch_dict[switch_id][port] = \
                 switch_dict[switch_id].get(port, []) + hosts
     return switch_dict
+
+
+def vpc_dictionary():
+    vpc_dict = {}
+    for pair in cfg.CONF.ml2_cisco_apic.apic_vpc_pairs:
+        pair_tuple = pair.split(':')
+        if len(pair_tuple) != 2 or \
+                any(map(lambda x: not x.isdigit(), pair_tuple)):
+            # Validation error, ignore this item
+            continue
+        vpc_dict[pair_tuple[0]] = pair_tuple[1]
+        vpc_dict[pair_tuple[1]] = pair_tuple[0]
+    return vpc_dict
 
 
 def external_network_dictionary():

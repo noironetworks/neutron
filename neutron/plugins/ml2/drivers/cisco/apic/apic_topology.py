@@ -174,6 +174,7 @@ class ApicTopologyAgent(manager.Manager):
         self.interfaces = {}
         self.lldpcmd = None
         self.peers = {}
+        self.invalid_peers = []
         self.port_desc_re = map(re.compile, ACI_PORT_DESCR_FORMATS)
         self.root_helper = self.conf.root_helper
         self.service_agent = ApicTopologyServiceNotifierApi()
@@ -221,12 +222,42 @@ class ApicTopologyAgent(manager.Manager):
                 force_send = True
                 self.count_current = 0
 
-            # Make a copy of self.peers
-            old_peers = {}
-            for interface in self.peers:
-                old_peers[interface] = self.peers[interface]
+            # Check for new peers
+            new_peers = self._get_peers()
+            new_peers = self._valid_peers(new_peers)
 
-            # Check for lldp peers
+            # Make a copy of current interfaces
+            curr_peers = {}
+            for interface in self.peers:
+                curr_peers[interface] = self.peers[interface]
+
+            # Based curr -> new updates, add the new interfaces
+            self.peers = {}
+            for interface in new_peers:
+                peer = new_peers[interface]
+                self.peers[interface] = peer
+                if interface in curr_peers and \
+                        curr_peers[interface] != peer:
+                    self.service_agent.update_link(
+                        context, peer[0], peer[1], None, 0, 0, 0)
+                if interface not in curr_peers or \
+                        curr_peers[interface] != peer or \
+                        force_send:
+                    self.service_agent.update_link(context, *peer)
+                if interface in curr_peers:
+                    curr_peers.pop(interface)
+
+            # Any interface still in curr_peers need to be deleted
+            for interface in curr_peers:
+                peer = curr_peers[interface]
+                self.service_agent.update_link(
+                    context, peer[0], peer[1], None, 0, 0, 0)
+
+        except Exception:
+            LOG.exception(_("APIC service agent: exception in LLDP parsing"))
+
+    def _get_peers(self):
+            peers = {}
             lldpkeys = utils.execute(self.lldpcmd, self.root_helper)
             for line in lldpkeys.split('\n'):
                 if not line or '=' not in line:
@@ -238,22 +269,38 @@ class ApicTopologyAgent(manager.Manager):
                         match = regexp.match(value)
                         if match:
                             mac = self._get_mac(interface)
-                            if interface in old_peers:
-                                old_peers.pop(interface)
                             switch, module, port = match.group(1, 2, 3)
                             peer = (self.host, interface, mac,
                                     switch, module, port)
-                            if force_send or interface not in self.peers or \
-                                    self.peers[interface] != peer:
-                                self.service_agent.update_link(context, *peer)
-                                self.peers[interface] = peer
-            if old_peers:
-                for interface in old_peers:
-                    olink = old_peers[interface]
-                    self.service_agent.update_link(
-                        context, olink[0], olink[1], None, 0, 0, 0)
-        except Exception:
-            LOG.exception(_("APIC service agent: exception in LLDP parsing"))
+                            if interface not in peers:
+                                peers[interface] = []
+                            peers[interface].append(peer)
+            return peers
+
+    def _valid_peers(self, peers):
+            # Reduce the peers array to one valid peer per interface
+            # NOTE:
+            # There is a bug in lldpd daemon that it keeps reporting
+            # old peers even after their updates have stopped
+            # we keep track of that report remove them from peers
+
+            valid_peers = {}
+            invalid_peers = []
+            for interface in peers:
+                curr_peer = None
+                for peer in peers[interface]:
+                    if peer in self.invalid_peers:
+                        invalid_peers.append(peer)
+                    else:
+                        if curr_peer is None:
+                            curr_peer = peer
+                        else:
+                            invalid_peers.append(peer)
+                if curr_peer is not None:
+                    valid_peers[interface] = curr_peer
+
+            self.invalid_peers = invalid_peers
+            return valid_peers
 
     def _get_mac(self, interface):
         mac = None

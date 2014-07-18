@@ -65,6 +65,7 @@ class APICManager(object):
         self.apic_config = apic_config
         self.vlan_ranges = network_config['vlan_ranges']
         self.switch_dict = network_config['switch_dict']
+        self.vpc_dict = network_config['vpc_dict']
         self.ext_net_dict = network_config['external_network_dict']
 
         # Connect to the the APIC
@@ -83,6 +84,7 @@ class APICManager(object):
         self.app_profile_name = self.apic_mapper.app_profile(
             None, apic_config.apic_app_profile_name)
         self.function_profile = apic_config.apic_function_profile
+        self.lacp_profile = apic_config.apic_lacp_profile
 
     def ensure_infra_created_on_apic(self):
         """Ensure the infrastructure is setup.
@@ -106,8 +108,12 @@ class APICManager(object):
         ent_name = self.apic_config.apic_entity_profile
         self.ensure_entity_profile_created_on_apic(ent_name)
 
+        # Create lacp profile
+        lacp_name = self.lacp_profile
+        self.ensure_lacp_profile_created_on_apic(lacp_name)
+
         # Create function profile
-        func_name = self.apic_config.apic_function_profile
+        func_name = self.function_profile
         self.ensure_function_profile_created_on_apic(func_name)
 
         # first make sure that all existing switches in DB are in apic
@@ -169,8 +175,14 @@ class APICManager(object):
         with self.apic.transaction(transaction) as trs:
             self.apic.infraAccPortGrp.create(name, transaction=trs)
             # Attach entity profile to function profile
-            self.apic.infraRsAttEntP.create(name, tDn=self.entity_profile_dn,
+            self.apic.infraRsAttEntP.create(name,
+                                            tDn=self.entity_profile_dn,
                                             transaction=trs)
+
+    def ensure_lacp_profile_created_on_apic(self, name, transaction=None):
+        """Create the lacp profile."""
+        with self.apic.transaction(transaction) as trs:
+            self.apic.lacpLagPol.create(name, mode='active', transaction=trs)
 
     def ensure_infra_created_for_switch(self, switch, transaction=None):
         # Create a node and profile for this switch
@@ -182,29 +194,71 @@ class APICManager(object):
 
             # Setup each module and port range
             for module in self.db.get_modules_for_switch(switch):
-                module = module[0]
-                hname = 'hports-%s' % module
-                self.apic.infraHPortS.create(ppname, hname, 'range',
-                                             transaction=trs)
-                fpdn = self.apic.infraAccPortGrp.dn(self.function_profile)
-                self.apic.infraRsAccBaseGrp.create(ppname, hname, 'range',
-                                                   tDn=fpdn, transaction=trs)
-
                 # Add this module and ports to the profile
+                module = module[0]
                 ports = [p[0] for p in
                          self.db.get_ports_for_switch_module(switch, module)]
                 ports.sort()
-                #ranges = APICManager.group_by_ranges(ports)
-                ranges = zip(ports, ports)
-                for prange in ranges:
-                    # Create port block for this port range
-                    pbname = '%s-%s' % (prange[0], prange[-1])
+                for port in ports:
+                    pbname = '%s-%s' % (port, port)
+                    hname = 'hports-%s-%s' % (module, pbname)
+                    self.apic.infraHPortS.create(ppname, hname, 'range',
+                                                 transaction=trs)
+                    fpdn = self.get_function_profile(switch, module, port,
+                                                     transaction=trs)
+                    self.apic.infraRsAccBaseGrp.create(ppname, hname, 'range',
+                                                       tDn=fpdn,
+                                                       transaction=trs)
                     self.apic.infraPortBlk.create(ppname, hname, 'range',
                                                   pbname, fromCard=module,
                                                   toCard=module,
-                                                  fromPort=str(prange[0]),
-                                                  toPort=str(prange[-1]),
+                                                  fromPort=str(port),
+                                                  toPort=str(port),
                                                   transaction=trs)
+
+    def get_function_profile(self, switch, module, port, transaction=None):
+        fpdn = self.apic.infraAccPortGrp.dn(self.function_profile)
+        with self.apic.transaction(transaction) as trs:
+            if switch in self.vpc_dict:
+                link1 = switch, module, port
+                link2 = None
+
+                host = self.db.get_hostlinks_for_switchport(
+                    switch, module, port)[0][0]
+                links = get_switch_and_port_for_host(host)
+                for link in links:
+                    switch2, module2, port2 = link
+                    if switch2 == self.vpc_dict[switch]:
+                        link2 = switch2, module2, port2
+                        break
+                if link2 is not None:
+                    fpdn = self.ensure_vpc_profile_created(link1, link2,
+                                                           transaction=trs)
+        return fpdn
+
+    def ensure_vpc_profile_created(self, link1, link2, transaction=None):
+        sw1, mod1, port = link1
+        sw2, mod2, port = link2
+        bname = 'bundle-%s-%s-%s-and-%s-%s-%s' % (
+            sw1, mod1, pstart1, sw2, mod1, pstart2)
+
+        dn = None
+        bundle = self.apic.infraAccBndlGrp.get(bname)
+        if bundle:
+            dn = self.apic.infraAccBndlGrp.dn(bname)
+        else:
+            with self.apic.transaction(transaction) as trs:
+                self.apic.infraAccBndlGrp.create(bname, lagT='node',
+                                                 transaction=trs)
+                dn = self.apic.infraAccBndlGrp.dn(bname)
+                ep = self.entity_profile_dn
+                self.apic.infraRsAttEntP.create(bname, tDn=ep,
+                                                transaction=trs)
+                lp = self.lacp_profile
+                self.apic.infraRsLacpPol.create(bname,
+                                                tnLacpLagPolName=lp,
+                                                transaction=trs)
+        return dn
 
     def ensure_node_profile_created_for_switch(self, switch_id,
                                                transaction=None):
@@ -229,8 +283,9 @@ class APICManager(object):
     def ensure_port_profile_created_for_switch(self, switch, transaction=None):
         """Check and create infra port profiles for a node."""
 
-        # Generate uuid for port profile name
+        # Generate id for port profile
         ppname = 'pprofile-%s' % switch
+
         # Create port profile for this switch
         with self.apic.transaction(transaction) as trs:
             self.apic.infraAccPortP.create(ppname, transaction=trs)
@@ -688,13 +743,36 @@ class APICManager(object):
 
     def add_hostlink(self, host, ifname, ifmac, switch, module, port,
                      transaction=None):
-        prev_links = self.db.get_hostlinks_for_host_switchport(
-            host, switch, module, port)
-        self.db.add_hostlink(host, ifname, ifmac,
-                             switch, module, port)
-        if not prev_links:
-            with self.apic.transaction(transaction) as trs:
-                self.ensure_infra_created_for_switch(switch, transaction=trs)
+        switch2 = None
+        update = False
+
+        with self.apic.transaction(transaction) as trs:
+            hostlinks = []
+            for hlink in self.db.get_switch_and_port_for_host(host):
+                hostlinks.append(hlink)
+
+            if switch in self.vpc_dict:
+                # with VPC, we support exactly one link for switch/host
+                update = True
+                switch2 = self.vpc_dict[switch]
+                for link in hostlinks:
+                    switch1, module1, port1 = link
+                    if switch1 == switch:
+                        update = False
+                        break
+            else:
+                # no VPC, we support exactly one link from this host
+                if not hostlinks:
+                    update = True
+
+            if update:
+                self.db.add_hostlink(host, ifname, ifmac,
+                                     switch, module, port)
+                self.ensure_infra_created_for_switch(switch,
+                                                     transaction=trs)
+                if switch2 is not None:
+                    self.ensure_infra_created_for_switch(switch2,
+                                                         transaction=trs)
                 self.ensure_vlans_created_for_host(host, transaction=trs)
 
     def remove_hostlink(self,
@@ -702,29 +780,3 @@ class APICManager(object):
                         switch, module, port):
         self.db.delete_hostlink(host, ifname)
         # TODO(mandeep): delete the right elements
-
-    def clean(self):
-        """Clean up apic profiles and DB information (useful for testing)."""
-        # clean infra profiles
-        vlan_ns_name = self.apic_config.apic_vlan_ns_name
-        self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'dynamic')
-        self.apic.fvnsVlanInstP.delete(vlan_ns_name, 'static')
-
-        # delete physdom profiles
-        phys_name = self.apic_config.apic_domain_name
-        self.apic.physDomP.delete(phys_name)
-
-        # delete entity profile
-        ent_name = self.apic_config.apic_entity_profile
-        self.apic.infraAttEntityP.delete(ent_name)
-
-        # delete function profile
-        func_name = self.apic_config.apic_function_profile
-        self.apic.infraAccPortGrp.delete(func_name)
-
-        # delete switch profile for switches in DB
-        for switch_id in self.db.get_switches():
-            self.apic.infraNodeP.delete(switch_id)
-
-        # clean db
-        self.db.clean()
