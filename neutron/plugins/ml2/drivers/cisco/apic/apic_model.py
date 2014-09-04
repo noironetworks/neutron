@@ -16,13 +16,13 @@
 # @author: Arvind Somya (asomya@cisco.com), Cisco Systems Inc.
 
 import sqlalchemy as sa
+from sqlalchemy import orm
 
 from neutron.db import api as db_api
 from neutron.db import model_base
+
 from neutron.db import models_v2
 from neutron.plugins.ml2 import models as models_ml2
-
-from neutron.openstack.common import lockutils
 
 
 class RouterContract(model_base.BASEV2, models_v2.HasTenant):
@@ -36,7 +36,7 @@ class RouterContract(model_base.BASEV2, models_v2.HasTenant):
 
     __tablename__ = 'cisco_ml2_apic_contracts'
 
-    router_id = sa.Column(sa.String(64), nullable=False, primary_key=True)
+    router_id = sa.Column(sa.String(64), primary_key=True)
 
 
 class HostLink(model_base.BASEV2):
@@ -54,10 +54,9 @@ class HostLink(model_base.BASEV2):
 
 
 class ApicName(model_base.BASEV2):
-
     """Mapping of names created on the APIC."""
 
-    __tablename__ = 'cisco_ml2_apic_namemap'
+    __tablename__ = 'cisco_ml2_apic_names'
 
     neutron_id = sa.Column(sa.String(36), nullable=False, primary_key=True)
     neutron_type = sa.Column(sa.String(32), nullable=False, primary_key=True)
@@ -82,36 +81,31 @@ class ApicDbModel(object):
                                   router_id=router_id)
         with self.session.begin(subtransactions=True):
             self.session.add(contract)
-            self._flush()
         return contract
 
     def update_contract_for_router(self, tenant_id, router_id):
-        """Stores a new contract for the given tenant."""
         with self.session.begin(subtransactions=True):
             contract = self.session.query(RouterContract).filter_by(
-                router_id=router_id).first()
+                router_id=router_id).with_lockmode('update').first()
             if contract:
                 contract.tenant_id = tenant_id
                 self.session.merge(contract)
-                self._flush()
             else:
                 self.write_contract_for_router(tenant_id, router_id)
 
     def delete_contract_for_router(self, router_id):
-        """Stores a new contract for the given tenant."""
         with self.session.begin(subtransactions=True):
-            contract = self.session.query(RouterContract).filter_by(
-                router_id=router_id).first()
-            if contract:
-                self.session.delete(contract)
-                self._flush()
+            try:
+                self.session.query(RouterContract).filter_by(
+                    router_id=router_id).delete()
+            except orm.exc.NoResultFound:
+                return
 
     def add_hostlink(self, host, ifname, ifmac, swid, module, port):
-        row = HostLink(host=host, ifname=ifname, ifmac=ifmac,
-                       swid=swid, module=module, port=port)
+        link = HostLink(host=host, ifname=ifname, ifmac=ifmac,
+                        swid=swid, module=module, port=port)
         with self.session.begin(subtransactions=True):
-            self.session.merge(row)
-            self._flush()
+            self.session.merge(link)
 
     def get_hostlinks(self):
         return self.session.query(HostLink).all()
@@ -134,11 +128,11 @@ class ApicDbModel(object):
 
     def delete_hostlink(self, host, ifname):
         with self.session.begin(subtransactions=True):
-            profile = self.session.query(HostLink).filter_by(
-                host=host, ifname=ifname).first()
-            if profile:
-                self.session.delete(profile)
-                self._flush()
+            try:
+                self.session.query(HostLink).filter_by(host=host,
+                                                       ifname=ifname).delete()
+            except orm.exc.NoResultFound:
+                return
 
     def get_switches(self):
         return self.session.query(HostLink.swid).distinct()
@@ -166,21 +160,20 @@ class ApicDbModel(object):
                     po.network_id == ns.network_id).distinct()
 
     def add_apic_name(self, neutron_id, neutron_type, apic_name):
-        row = ApicName(neutron_id=neutron_id,
-                       neutron_type=neutron_type,
-                       apic_name=apic_name)
+        name = ApicName(neutron_id=neutron_id,
+                        neutron_type=neutron_type,
+                        apic_name=apic_name)
         with self.session.begin(subtransactions=True):
-            self.session.add(row)
-            self._flush()
+            self.session.add(name)
 
     def update_apic_name(self, neutron_id, neutron_type, apic_name):
         with self.session.begin(subtransactions=True):
             name = self.session.query(ApicName).filter_by(
-                neutron_id=neutron_id, neutron_type=neutron_type).first()
+                neutron_id=neutron_id,
+                neutron_type=neutron_type).with_lockmode('update').first()
             if name:
                 name.apic_name = apic_name
                 self.session.merge(name)
-                self._flush()
             else:
                 self.add_apic_name(neutron_id, neutron_type, apic_name)
 
@@ -193,12 +186,8 @@ class ApicDbModel(object):
 
     def delete_apic_name(self, neutron_id):
         with self.session.begin(subtransactions=True):
-            profile = self.session.query(ApicName).filter_by(
-                neutron_id=neutron_id).first()
-            if profile:
-                self.session.delete(profile)
-                self._flush()
-
-    @lockutils.synchronized('apic_manager_flush')
-    def _flush(self):
-        self.session.flush()
+            try:
+                self.session.query(ApicName).filter_by(
+                    neutron_id=neutron_id).delete()
+            except orm.exc.NoResultFound:
+                return

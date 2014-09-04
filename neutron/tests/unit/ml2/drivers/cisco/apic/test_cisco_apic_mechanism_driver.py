@@ -15,9 +15,14 @@
 #
 # @author: Henry Gessau, Cisco Systems
 
+import sys
+
 import mock
 
+sys.modules["apicapi"] = mock.Mock()
+
 from neutron.common import constants as n_constants
+from neutron.extensions import portbindings
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic as md
 from neutron.plugins.ml2.drivers import type_vlan  # noqa
 from neutron.tests import base
@@ -39,14 +44,12 @@ TEST_SEGMENT2 = 'test-segment2'
 
 class TestCiscoApicMechDriver(base.BaseTestCase,
                               mocked.ControllerMixin,
-                              mocked.ConfigMixin,
-                              mocked.DbModelMixin):
+                              mocked.ConfigMixin):
 
     def setUp(self):
         super(TestCiscoApicMechDriver, self).setUp()
         mocked.ControllerMixin.set_up_mocks(self)
         mocked.ConfigMixin.set_up_mocks(self)
-        mocked.DbModelMixin.set_up_mocks(self)
 
         self.mock_apic_manager_login_responses()
         self.driver = md.APICMechanismDriver()
@@ -65,18 +68,12 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
             name_mapper=mock.Mock(), ext_net_dict=self.external_network_dict)
 
         self.driver.apic_manager.apic.transaction = self.fake_transaction
-        self.addCleanup(mock.patch.stopall)
 
     def test_initialize(self):
-        mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_manager.'
-                   'APICManager.ensure_infra_created_on_apic').start()
-        mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_manager.'
-                   'APICManager.ensure_bgp_pod_policy_created_on_apic').start()
-        mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_mapper.'
-                   'APICNameMapper.app_profile').start()
+        mgr = self.driver.apic_manager
         self.driver.initialize()
-        self.session = self.driver.apic_manager.apic.session
-        self.assert_responses_drained()
+        mgr.ensure_infra_created_on_apic.assert_called_once()
+        mgr.ensure_bgp_pod_policy_created_on_apic.assert_called_once()
 
     def test_update_port_postcommit(self):
         net_ctx = self._get_network_context(mocked.APIC_TENANT,
@@ -132,11 +129,8 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
                                           mocked.APIC_NETWORK,
                                           'vm1', net_ctx, HOST_ID1, gw=True)
         mgr = self.driver.apic_manager
-        with mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_manager.'
-                        'APICManager.ensure_external_routed_network_created',
-                        side_effect=Exception()):
-            self.driver.update_port_postcommit(port_ctx)
-            mgr.ensure_external_routed_network_deleted.assert_called_once()
+        self.driver.update_port_postcommit(port_ctx)
+        mgr.ensure_external_routed_network_deleted.assert_called_once()
 
     def test_create_network_postcommit(self):
         ctx = self._get_network_context(mocked.APIC_TENANT,
@@ -146,7 +140,7 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         self.driver.create_network_postcommit(ctx)
         mgr.ensure_bd_created_on_apic.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
-        mgr.ensure_epg_created_for_network.assert_called_once_with(
+        mgr.ensure_epg_created.assert_called_once_with(
             mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
 
     def test_create_external_network_postcommit(self):
@@ -156,7 +150,7 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         mgr = self.driver.apic_manager
         self.driver.create_network_postcommit(ctx)
         self.assertFalse(mgr.ensure_bd_created_on_apic.called)
-        self.assertFalse(mgr.ensure_epg_created_for_network.called)
+        self.assertFalse(mgr.ensure_epg_created.called)
 
     def test_delete_network_postcommit(self):
         ctx = self._get_network_context(mocked.APIC_TENANT,
@@ -294,3 +288,11 @@ class FakePortContext(object):
 
     def set_binding(self, segment_id, vif_type, cap_port_filter):
         pass
+
+    @property
+    def host(self):
+        return self._port.get(portbindings.HOST_ID)
+
+    @property
+    def original_host(self):
+        return self._original_port.get(portbindings.HOST_ID)

@@ -18,8 +18,8 @@
 from oslo.config import cfg
 
 
-DEFAULT_ROOT_HELPER = \
-    'sudo /usr/local/bin/neutron-rootwrap /etc/neutron/rootwrap.conf'
+DEFAULT_ROOT_HELPER = ('sudo /usr/local/bin/neutron-rootwrap '
+                       '/etc/neutron/rootwrap.conf')
 
 
 # oslo.config limits ${var} expansion to global variables
@@ -40,14 +40,14 @@ apic_opts = [
                 help=_("An ordered list of host names or IP addresses of "
                        "the APIC controller(s).")),
     cfg.StrOpt('apic_username',
-               default='admin',
                help=_("Username for the APIC controller")),
     cfg.StrOpt('apic_password',
-               help=_("Password for the APIC controller"),
-               secret=True),
+               help=_("Password for the APIC controller"), secret=True),
     cfg.StrOpt('apic_name_mapping',
                default='use_name',
                help=_("Name mapping strategy to use: use_uuid | use_name")),
+    cfg.BoolOpt('apic_use_ssl', default=True,
+                help=_("Use SSL to connect to the APIC controller")),
     cfg.StrOpt('apic_domain_name',
                default='${apic_system_id}',
                help=_("Name for the domain created on APIC")),
@@ -68,7 +68,7 @@ apic_opts = [
                help=_("Name of the function profile to be created")),
     cfg.StrOpt('apic_lacp_profile',
                default='${apic_system_id}_lacp_profile',
-               help=_("Name of the lacp profile to be created")),
+               help=_("Name of the LACP profile to be created")),
     cfg.ListOpt('apic_host_uplink_ports',
                 default=[],
                 help=_('The uplink ports to check for ACI connectivity')),
@@ -78,18 +78,18 @@ apic_opts = [
     cfg.StrOpt('apic_vlan_range',
                default='2:4093',
                help=_("Range of VLAN's to be used for Openstack")),
-    cfg.FloatOpt('apic_agent_report_interval',
-                 default=30,
-                 help=_('Interval between agent status updates (in sec)')),
-    cfg.FloatOpt('apic_agent_poll_interval',
-                 default=2,
-                 help=_('Interval between agent poll for topology (in sec)')),
     cfg.StrOpt('root_helper',
                default=DEFAULT_ROOT_HELPER,
                help=_("Setup root helper as rootwrap or sudo")),
     cfg.IntOpt('apic_sync_interval',
                default=0,
                help=_("Synchronization interval in seconds")),
+    cfg.FloatOpt('apic_agent_report_interval',
+                 default=30,
+                 help=_('Interval between agent status updates (in sec)')),
+    cfg.FloatOpt('apic_agent_poll_interval',
+                 default=2,
+                 help=_('Interval between agent poll for topology (in sec)')),
 ]
 
 
@@ -100,10 +100,7 @@ def _get_specific_config(prefix):
     """retrieve config in the format [<prefix>:<value>]."""
     conf_dict = {}
     multi_parser = cfg.MultiConfigParser()
-    read_ok = multi_parser.read(cfg.CONF.config_file)
-    if len(read_ok) != len(cfg.CONF.config_file):
-        raise cfg.Error(_("Some config files were not parsed properly"))
-
+    multi_parser.read(cfg.CONF.config_file)
     for parsed_file in multi_parser.parsed:
         for parsed_item in parsed_file.keys():
             if parsed_item.startswith(prefix):
@@ -113,7 +110,7 @@ def _get_specific_config(prefix):
     return conf_dict
 
 
-def switch_dictionary():
+def create_switch_dictionary():
     switch_dict = {}
     conf = _get_specific_config('apic_switch')
     for switch_id in conf:
@@ -121,17 +118,17 @@ def switch_dictionary():
         for host_list, port in conf[switch_id]:
             hosts = host_list.split(',')
             port = port[0]
-            switch_dict[switch_id][port] = \
-                switch_dict[switch_id].get(port, []) + hosts
+            switch_dict[switch_id][port] = (
+                switch_dict[switch_id].get(port, []) + hosts)
     return switch_dict
 
 
-def vpc_dictionary():
+def create_vpc_dictionary():
     vpc_dict = {}
     for pair in cfg.CONF.ml2_cisco_apic.apic_vpc_pairs:
         pair_tuple = pair.split(':')
-        if len(pair_tuple) != 2 or \
-                any(map(lambda x: not x.isdigit(), pair_tuple)):
+        if (len(pair_tuple) != 2 or
+                any(map(lambda x: not x.isdigit(), pair_tuple))):
             # Validation error, ignore this item
             continue
         vpc_dict[pair_tuple[0]] = pair_tuple[1]
@@ -139,8 +136,7 @@ def vpc_dictionary():
     return vpc_dict
 
 
-def external_network_dictionary():
-    # TODO(ivar): validate external network configuration
+def create_external_network_dictionary():
     router_dict = {}
     conf = _get_specific_config('apic_external_network')
     for net_id in conf:

@@ -16,13 +16,12 @@
 # @author: Henry Gessau, Cisco Systems
 
 import contextlib
-import mock
 import requests
 
+import mock
 from oslo.config import cfg
 
 from neutron.common import config as neutron_config
-from neutron.plugins.ml2.drivers.cisco.apic import apic_client as apic
 from neutron.tests.unit import test_api_v2
 
 
@@ -68,7 +67,7 @@ APIC_VLANID_TO = 2999
 APIC_VLAN_FROM = 'vlan-%d' % APIC_VLANID_FROM
 APIC_VLAN_TO = 'vlan-%d' % APIC_VLANID_TO
 
-APIC_ROUTER = apic.ApicName('router', 'router_id')
+APIC_ROUTER = 'router_id'
 
 APIC_EXT_SWITCH = '203'
 APIC_EXT_MODULE = '1'
@@ -78,6 +77,20 @@ APIC_EXT_CIDR_EXPOSED = '10.10.40.2/16'
 APIC_EXT_GATEWAY_IP = '10.10.40.1'
 
 APIC_KEY = 'key'
+
+KEYSTONE_TOKEN = '123Token123'
+
+APIC_UPLINK_PORTS = ['uplink_port']
+
+SERVICE_HOST = 'host1'
+SERVICE_HOST_IFACE = 'eth0'
+SERVICE_HOST_MAC = 'aa:ee:ii:oo:uu:yy'
+
+SERVICE_PEER_CHASSIS_NAME = 'leaf4'
+SERVICE_PEER_CHASSIS = 'topology/pod-1/node-' + APIC_EXT_SWITCH
+SERVICE_PEER_PORT_LOCAL = 'Eth%s/%s' % (APIC_EXT_MODULE, APIC_EXT_PORT)
+SERVICE_PEER_PORT_DESC = ('topology/pod-1/paths-%s/pathep-[%s]' %
+                          (APIC_EXT_SWITCH, SERVICE_PEER_PORT_LOCAL.lower()))
 
 
 class ControllerMixin(object):
@@ -113,20 +126,6 @@ class ControllerMixin(object):
         attrs['debug_mo'] = mo  # useful for debugging
         self._stage_mocked_response('post', OK, mo, **attrs)
 
-    def mock_response_for_get(self, mo, **attrs):
-        self._stage_mocked_response('get', OK, mo, **attrs)
-
-    def mock_append_to_response(self, mo, **attrs):
-        # Append a MO to the last get response.
-        mo_attrs = attrs and {mo: {'attributes': attrs}} or {}
-        self.response['get'][-1].json.return_value['imdata'].append(mo_attrs)
-
-    def mock_error_post_response(self, status, **attrs):
-        self._stage_mocked_response('post', status, 'error', **attrs)
-
-    def mock_error_get_response(self, status, **attrs):
-        self._stage_mocked_response('get', status, 'error', **attrs)
-
     def _stage_mocked_response(self, req, mock_status, mo, **attrs):
         response = mock.MagicMock()
         response.status_code = mock_status
@@ -134,49 +133,10 @@ class ControllerMixin(object):
         response.json.return_value = {'imdata': mo_attrs}
         self.response[req].append(response)
 
-    def mock_responses_for_create(self, obj):
-        self._mock_container_responses_for_create(
-            apic.ManagedObjectClass(obj).container)
-        name = '-'.join([obj, 'name'])  # useful for debugging
-        self._stage_mocked_response('post', OK, obj, name=name)
-
-    def mock_responses_for_create_if_not_exists(self, obj):
-        self.mock_response_for_get(obj)
-        self.mock_responses_for_create(obj)
-
-    def _mock_container_responses_for_create(self, obj):
-        # Recursively generate responses for creating obj's containers.
-        if obj:
-            mo = apic.ManagedObjectClass(obj)
-            if mo.can_create:
-                if mo.container:
-                    self._mock_container_responses_for_create(mo.container)
-                name = '-'.join([obj, 'name'])  # useful for debugging
-                self._stage_mocked_response('post', OK, obj, debug_name=name)
-
     def mock_apic_manager_login_responses(self, timeout=300):
         # APIC Manager tests are based on authenticated session
         self.mock_response_for_post('aaaLogin', userName=APIC_USR,
                                     token='ok', refreshTimeoutSeconds=timeout)
-
-    def assert_responses_drained(self, req=None):
-        """Fail if all the expected responses have not been consumed."""
-        request = {'post': self.session.post, 'get': self.session.get}
-        reqs = req and [req] or ['post', 'get']  # Both if none specified.
-        for req in reqs:
-            try:
-                request[req]('some url')
-            except StopIteration:
-                pass
-            else:
-                # User-friendly error message
-                msg = req + ' response queue not drained'
-                self.fail(msg=msg)
-
-    def get_top_container(self, mo):
-        while mo.container:
-            mo = apic.ManagedObjectClass(mo.container)
-        return mo
 
     @contextlib.contextmanager
     def fake_transaction(self, *args, **kwargs):
@@ -197,6 +157,9 @@ class ConfigMixin(object):
 
         # Configure global option apic_system_id
         cfg.CONF.set_override('apic_system_id', APIC_SYSTEM_ID)
+
+        # Configure option keystone_authtoken
+        cfg.CONF.keystone_authtoken = KEYSTONE_TOKEN
 
         # Configure the ML2 mechanism drivers and network types
         ml2_opts = {
@@ -226,6 +189,7 @@ class ConfigMixin(object):
             'apic_node_profile': APIC_NODE_PROF,
             'apic_entity_profile': APIC_ATT_ENT_PROF,
             'apic_function_profile': APIC_FUNC_PROF,
+            'apic_host_uplink_ports': APIC_UPLINK_PORTS
         }
         for opt, val in apic_test_config.items():
             cfg.CONF.set_override(opt, val, 'ml2_cisco_apic')
@@ -265,70 +229,7 @@ class ConfigMixin(object):
         self.mocked_parser.return_value.parsed = [apic_switch_cfg]
 
 
-class DbModelMixin(object):
-
-    """Mock the DB models for the APIC driver and service unit tests."""
-
-    def __init__(self):
-        self.mocked_session = None
-
-    def set_up_mocks(self):
-        self.mocked_session = mock.Mock()
-        get_session = mock.patch('neutron.db.api.get_session').start()
-        get_session.return_value = self.mocked_session
-
-    def mock_db_query_all_return(self, value):
-        """Mock db.session.query().all() to return value."""
-        query = self.mocked_session.query.return_value
-        query.all.return_value = value
-
-    def mock_db_query_filterby_first_return(self, value):
-        """Mock db.session.query().filterby().first() to return value."""
-        query = self.mocked_session.query.return_value
-        query.filter_by.return_value.first.return_value = value
-
-    def mock_db_query_filterby_distinct_return(self, value):
-        """Mock db.session.query().filterby().distinct() to return value."""
-        query = self.mocked_session.query.return_value
-        query.filter_by.return_value.distinct.return_value = value
-
-    def mock_db_query_filterby_all_return(self, value):
-        """Mock db.session.query().filterby().all() to return value."""
-        query = self.mocked_session.query.return_value
-        query.filter_by.return_value.all.return_value = value
-
-    def mock_db_query_filter3_distinct_return(self, value):
-        """Mock to return value.
-        db.session.query().filter().filter().filter().distinct()
-        """
-        query = self.mocked_session.query.return_value
-        query_filter3 = \
-            query.filter.return_value.filter.return_value.filter.return_value
-        query_filter3.distinct.return_value = value
-
-    def mock_db_query_distinct_return(self, value):
-        """Mock db.session.query().distinct() to return value."""
-        query = self.mocked_session.query.return_value
-        query.distinct.return_value = value
-
-
-class FakeQuery(list):
-
-    def __init__(self, *args):
-        self.extend(args)
-
-    def count(self):
-        return len(self)
-
-
 class FakeDbContract(object):
 
     def __init__(self, contract_id):
         self.contract_id = contract_id
-
-
-class FakeKeyPair(object):
-
-    def __init__(self, key):
-        self.key = key
-        self.value = ''

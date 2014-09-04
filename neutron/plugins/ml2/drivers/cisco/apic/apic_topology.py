@@ -15,8 +15,11 @@
 #
 # @author: Mandeep Dhami (dhami@noironetworks.com), Cisco Systems Inc.
 
-import eventlet
 import re
+
+import eventlet
+
+eventlet.monkey_patch()
 
 from oslo.config import cfg
 
@@ -27,13 +30,15 @@ from neutron.common import rpc as neutron_rpc
 from neutron.common import utils as neutron_utils
 from neutron.db import agents_db
 from neutron import manager
+from neutron.openstack.common.gettextutils import _LE, _LI
 from neutron.openstack.common import lockutils
 from neutron.openstack.common import log as logging
 from neutron.openstack.common import periodic_task
 from neutron.openstack.common import rpc
 from neutron.openstack.common import service as svc
-from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
+from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic as ma
 from neutron.plugins.ml2.drivers import type_vlan  # noqa
+
 from neutron import service
 
 ACI_PORT_DESCR_FORMATS = [
@@ -63,17 +68,15 @@ class ApicTopologyService(manager.Manager):
         self.conf = cfg.CONF.ml2_cisco_apic
         self.conn = None
         self.peers = {}
+        self.invalid_peers = []
         self.dispatcher = None
         self.state = None
         self.state_agent = None
         self.topic = TOPIC_APIC_SERVICE
-        self.apic_manager = \
-            mechanism_apic.APICMechanismDriver.get_apic_manager()
+        self.apic_manager = ma.APICMechanismDriver.get_apic_manager(False)
 
     def init_host(self):
-        LOG.info(_("APIC service agent starting ..."))
-
-        ###self.state_agent = agent_rpc.PluginReportStateAPI(self.topic)
+        LOG.info(_LI("APIC service agent starting ..."))
         self.state = {
             'binary': BINARY_APIC_SERVICE_AGENT,
             'host': self.host,
@@ -91,12 +94,12 @@ class ApicTopologyService(manager.Manager):
         self.conn.consume_in_thread()
 
     def after_start(self):
-        LOG.info(_("APIC service agent started"))
+        LOG.info(_LI("APIC service agent started"))
 
     def report_send(self, context):
         if not self.state_agent:
             return
-        LOG.debug(_("APIC service agent: sending report state"))
+        LOG.debug("APIC service agent: sending report state")
 
         try:
             self.state_agent.report_state(context, self.state)
@@ -106,14 +109,15 @@ class ApicTopologyService(manager.Manager):
             # ignore it
             return
         except Exception:
-            LOG.exception(_("APIC service agent: failed in reporting state"))
+            LOG.exception(_LE("APIC service agent: failed in reporting state"))
 
     @lockutils.synchronized('apic_service')
     def update_link(self, context,
                     host, interface, mac,
                     switch, module, port):
-        LOG.debug(_("APIC service agent: received update_link: %s"),
-                  ", ".join([host, interface, mac, switch, module, port]))
+        LOG.debug("APIC service agent: received update_link: %s",
+                  ", ".join(map(str,
+                                [host, interface, mac, switch, module, port])))
 
         nlink = (host, interface, mac, switch, module, port)
         clink = self.peers.get((host, interface), None)
@@ -174,7 +178,6 @@ class ApicTopologyAgent(manager.Manager):
         self.interfaces = {}
         self.lldpcmd = None
         self.peers = {}
-        self.invalid_peers = []
         self.port_desc_re = map(re.compile, ACI_PORT_DESCR_FORMATS)
         self.root_helper = self.conf.root_helper
         self.service_agent = ApicTopologyServiceNotifierApi()
@@ -182,11 +185,10 @@ class ApicTopologyAgent(manager.Manager):
         self.state_agent = None
         self.topic = TOPIC_APIC_SERVICE
         self.uplink_ports = []
+        self.invalid_peers = []
 
     def init_host(self):
-        LOG.info(_("APIC host agent: agent starting on %s"), self.host)
-
-        ###self.state_agent = agent_rpc.PluginReportStateAPI(self.topic)
+        LOG.info(_LI("APIC host agent: agent starting on %s"), self.host)
         self.state = {
             'binary': BINARY_APIC_HOST_AGENT,
             'host': self.host,
@@ -202,15 +204,15 @@ class ApicTopologyAgent(manager.Manager):
                 self.uplink_ports.append(inf)
             else:
                 # ignore unknown interfaces
-                LOG.error(_("No such interface (ignored): %s"), inf)
+                LOG.error(_LE("No such interface (ignored): %s"), inf)
         self.lldpcmd = ['lldpctl', '-f', 'keyvalue'] + self.uplink_ports
 
     def after_start(self):
-        LOG.info(_("APIC host agent: started on %s"), self.host)
+        LOG.info(_LI("APIC host agent: started on %s"), self.host)
 
     @periodic_task.periodic_task
     def _check_for_new_peers(self, context):
-        LOG.debug(_("APIC host agent: _check_for_new_peers"))
+        LOG.debug("APIC host agent: _check_for_new_peers")
 
         if not self.lldpcmd:
             return
@@ -230,95 +232,90 @@ class ApicTopologyAgent(manager.Manager):
             curr_peers = {}
             for interface in self.peers:
                 curr_peers[interface] = self.peers[interface]
-
             # Based curr -> new updates, add the new interfaces
             self.peers = {}
             for interface in new_peers:
                 peer = new_peers[interface]
                 self.peers[interface] = peer
-                if interface in curr_peers and \
-                        curr_peers[interface] != peer:
+                if (interface in curr_peers and
+                        curr_peers[interface] != peer):
                     self.service_agent.update_link(
                         context, peer[0], peer[1], None, 0, 0, 0)
-                if interface not in curr_peers or \
-                        curr_peers[interface] != peer or \
-                        force_send:
+                if (interface not in curr_peers or
+                        curr_peers[interface] != peer or
+                        force_send):
                     self.service_agent.update_link(context, *peer)
                 if interface in curr_peers:
                     curr_peers.pop(interface)
 
             # Any interface still in curr_peers need to be deleted
-            for interface in curr_peers:
-                peer = curr_peers[interface]
+            for peer in curr_peers.values():
                 self.service_agent.update_link(
                     context, peer[0], peer[1], None, 0, 0, 0)
 
         except Exception:
-            LOG.exception(_("APIC service agent: exception in LLDP parsing"))
+            LOG.exception(_LE("APIC service agent: exception in LLDP parsing"))
 
     def _get_peers(self):
-            peers = {}
-            lldpkeys = utils.execute(self.lldpcmd, self.root_helper)
-            for line in lldpkeys.split('\n'):
-                if not line or '=' not in line:
-                    continue
-                fqkey, value = line.split('=', 1)
-                lldp, interface, key = fqkey.split('.', 2)
-                if key == 'port.descr':
-                    for regexp in self.port_desc_re:
-                        match = regexp.match(value)
-                        if match:
-                            mac = self._get_mac(interface)
-                            switch, module, port = match.group(1, 2, 3)
-                            peer = (self.host, interface, mac,
-                                    switch, module, port)
-                            if interface not in peers:
-                                peers[interface] = []
-                            peers[interface].append(peer)
-            return peers
+        peers = {}
+        lldpkeys = utils.execute(self.lldpcmd, self.root_helper)
+        for line in lldpkeys.splitlines():
+            if '=' not in line:
+                continue
+            fqkey, value = line.split('=', 1)
+            lldp, interface, key = fqkey.split('.', 2)
+            if key == 'port.descr':
+                for regexp in self.port_desc_re:
+                    match = regexp.match(value)
+                    if match:
+                        mac = self._get_mac(interface)
+                        switch, module, port = match.group(1, 2, 3)
+                        peer = (self.host, interface, mac,
+                                switch, module, port)
+                        if interface not in peers:
+                            peers[interface] = []
+                        peers[interface].append(peer)
+        return peers
 
     def _valid_peers(self, peers):
-            # Reduce the peers array to one valid peer per interface
-            # NOTE:
-            # There is a bug in lldpd daemon that it keeps reporting
-            # old peers even after their updates have stopped
-            # we keep track of that report remove them from peers
+        # Reduce the peers array to one valid peer per interface
+        # NOTE:
+        # There is a bug in lldpd daemon that it keeps reporting
+        # old peers even after their updates have stopped
+        # we keep track of that report remove them from peers
 
-            valid_peers = {}
-            invalid_peers = []
-            for interface in peers:
-                curr_peer = None
-                for peer in peers[interface]:
-                    if peer in self.invalid_peers:
-                        invalid_peers.append(peer)
-                    else:
-                        if curr_peer is None:
-                            curr_peer = peer
-                        else:
-                            invalid_peers.append(peer)
-                if curr_peer is not None:
-                    valid_peers[interface] = curr_peer
+        valid_peers = {}
+        invalid_peers = []
+        for interface in peers:
+            curr_peer = None
+            for peer in peers[interface]:
+                if peer in self.invalid_peers or curr_peer:
+                    invalid_peers.append(peer)
+                else:
+                    curr_peer = peer
+            if curr_peer is not None:
+                valid_peers[interface] = curr_peer
 
-            self.invalid_peers = invalid_peers
-            return valid_peers
+        self.invalid_peers = invalid_peers
+        return valid_peers
 
     def _get_mac(self, interface):
-        mac = None
         if interface in self.interfaces:
             return self.interfaces[interface]
         try:
             mac = ip_lib.IPDevice(interface).link.address
             self.interfaces[interface] = mac
+            return mac
         except Exception:
             # we can safely ignore it, it is only needed for debugging
-            LOG.exception(_("APIC service agent: can not get MACaddr for %s"),
-                          interface)
-        return mac
+            LOG.exception(
+                _LE("APIC service agent: can not get MACaddr for %s"),
+                interface)
 
     def report_send(self, context):
         if not self.state_agent:
             return
-        LOG.debug(_("APIC host agent: sending report state"))
+        LOG.debug("APIC host agent: sending report state")
 
         try:
             self.state_agent.report_state(context, self.state)
@@ -328,11 +325,10 @@ class ApicTopologyAgent(manager.Manager):
             # ignore it
             return
         except Exception:
-            LOG.exception(_("APIC host agent: failed in reporting state"))
+            LOG.exception(_LE("APIC host agent: failed in reporting state"))
 
 
 def launch(binary, manager, topic=None):
-    eventlet.monkey_patch()
     cfg.CONF(project='neutron')
     config.setup_logging(cfg.CONF)
     report_period = cfg.CONF.ml2_cisco_apic.apic_agent_report_interval

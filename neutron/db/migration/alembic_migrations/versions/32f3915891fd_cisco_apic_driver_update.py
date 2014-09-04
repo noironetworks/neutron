@@ -54,7 +54,7 @@ def upgrade(active_plugins=None, options=None):
         sa.PrimaryKeyConstraint('host', 'ifname'))
 
     op.create_table(
-        'cisco_ml2_apic_namemap',
+        'cisco_ml2_apic_names',
         sa.Column('neutron_id', sa.String(length=36), nullable=False),
         sa.Column('neutron_type', sa.String(length=32), nullable=False),
         sa.Column('apic_name', sa.String(length=255), nullable=False),
@@ -62,10 +62,8 @@ def upgrade(active_plugins=None, options=None):
 
     op.create_table(
         'cisco_ml2_apic_contracts',
-        sa.Column('tenant_id', sa.String(length=255), nullable=False),
+        sa.Column('tenant_id', sa.String(length=255)),
         sa.Column('router_id', sa.String(length=64), nullable=False),
-        sa.Column('contract_id', sa.String(length=64), nullable=False),
-        sa.Column('filter_id', sa.String(length=64), nullable=False),
         sa.PrimaryKeyConstraint('router_id'))
 
 
@@ -73,10 +71,9 @@ def downgrade(active_plugins=None, options=None):
     if not migration.should_run(active_plugins, migration_for_plugins):
         return
 
-    op.drop_table('cisco_ml2_apic_config')
+    op.drop_table('cisco_ml2_apic_contracts')
     op.drop_table('cisco_ml2_apic_names')
     op.drop_table('cisco_ml2_apic_host_links')
-    op.drop_table('cisco_ml2_apic_contracts')
 
     op.create_table(
         'cisco_ml2_apic_epgs',

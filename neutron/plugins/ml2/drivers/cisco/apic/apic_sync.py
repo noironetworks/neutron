@@ -13,11 +13,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 #
-# @author: Ivar Lazzaro (ivar@noironetworks.com), Cisco Systems Inc.
+# @author: Ivar Lazzaro (ivar-lazzaro), Cisco Systems Inc.
 
 from neutron.common import constants as n_constants
 from neutron import context
 from neutron import manager
+from neutron.openstack.common.gettextutils import _LW
 from neutron.openstack.common import log
 from neutron.openstack.common import loopingcall
 from neutron.plugins.ml2 import driver_context
@@ -55,7 +56,6 @@ class ApicBaseSynchronizer(SynchronizerBase):
         self.sync(self._sync_base)
 
     def _sync_base(self):
-        # TODO(ivar): Use appropriate filters on db queries
         ctx = context.get_admin_context()
         # Sync Networks
         for network in self.core_plugin.get_networks(ctx):
@@ -64,8 +64,8 @@ class ApicBaseSynchronizer(SynchronizerBase):
             try:
                 self.driver.create_network_postcommit(mech_context)
             except Exception:
-                LOG.warn(("Create network postcommit failed for"
-                          " network %s"), network['id'])
+                LOG.warn(_LW("Create network postcommit failed for "
+                             "network %s"), network['id'])
 
         # Sync Subnets
         for subnet in self.core_plugin.get_subnets(ctx):
@@ -74,8 +74,8 @@ class ApicBaseSynchronizer(SynchronizerBase):
             try:
                 self.driver.create_subnet_postcommit(mech_context)
             except Exception:
-                LOG.warn(("Create subnet postcommit failed for"
-                          " subnet %s"), subnet['id'])
+                LOG.warn(_LW("Create subnet postcommit failed for"
+                             " subnet %s"), subnet['id'])
 
         # Sync Ports (compute/gateway/dhcp)
         for port in self.core_plugin.get_ports(ctx):
@@ -85,8 +85,8 @@ class ApicBaseSynchronizer(SynchronizerBase):
             try:
                 self.driver.create_port_postcommit(mech_context)
             except Exception:
-                LOG.warn(("Create port postcommit failed for"
-                          " port %s"), port['id'])
+                LOG.warn(_LW("Create port postcommit failed for"
+                             " port %s"), port['id'])
 
 
 class ApicRouterSynchronizer(SynchronizerBase):
@@ -97,14 +97,12 @@ class ApicRouterSynchronizer(SynchronizerBase):
     def _sync_router(self):
         ctx = context.get_admin_context()
         # Sync Router Interfaces
-        r_if = n_constants.DEVICE_OWNER_ROUTER_INTF
-        for interface in self.core_plugin.get_ports(ctx):
-            if interface['device_owner'] == r_if:
-                try:
-                    self.driver.add_router_interface_postcommit(
-                        ctx, interface['device_id'],
-                        {'port_id': interface['id']})
-                except Exception:
-                    LOG.warn(("Add interface postcommit failed for"
-                              " router %s on port %s"), interface['device_id'],
-                             interface['id'])
+        filters = {'device_owner': [n_constants.DEVICE_OWNER_ROUTER_INTF]}
+        for interface in self.core_plugin.get_ports(ctx, filters=filters):
+            try:
+                self.driver.add_router_interface_postcommit(
+                    ctx, interface['device_id'],
+                    {'port_id': interface['id']})
+            except Exception:
+                LOG.warn(_LW("Add interface postcommit failed for "
+                             "port %s"), interface['id'])

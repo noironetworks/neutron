@@ -15,13 +15,18 @@
 #
 # @author: Arvind Somya (asomya@cisco.com), Cisco Systems
 
+import sys
+
 import mock
+
+sys.modules["apicapi"] = mock.Mock()
 
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic as md
 from neutron.services.l3_router import l3_apic
 from neutron.tests import base
 from neutron.tests.unit.ml2.drivers.cisco.apic import (
     test_cisco_apic_common as mocked)
+
 
 TENANT = 'tenant1'
 TENANT_CONTRACT = 'abcd'
@@ -61,26 +66,25 @@ class FakePort(object):
 
 class TestCiscoApicL3Plugin(base.BaseTestCase,
                             mocked.ControllerMixin,
-                            mocked.ConfigMixin,
-                            mocked.DbModelMixin):
+                            mocked.ConfigMixin):
     def setUp(self):
         super(TestCiscoApicL3Plugin, self).setUp()
-        mocked.ConfigMixin.set_up_mocks(self)
-
-        mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_client.'
-                   'RestClient').start()
         mock.patch('neutron.plugins.ml2.drivers.cisco.apic.apic_model.'
                    'ApicDbModel').start()
-
+        mocked.ControllerMixin.set_up_mocks(self)
+        mocked.ConfigMixin.set_up_mocks(self)
         self.plugin = l3_apic.ApicL3ServicePlugin()
         md.APICMechanismDriver.get_router_synchronizer = mock.Mock()
         self.context = FakeContext()
         self.context.tenant_id = TENANT
-        self.interface_info = {'subnet_id': SUBNET, 'port_id': PORT}
+        self.interface_info = {'subnet': {'subnet_id': SUBNET},
+                               'port': {'port_id': PORT}}
         self.subnet = {'network_id': NETWORK, 'tenant_id': TENANT}
         self.port = {'tenant_id': TENANT,
+                     'network_id': NETWORK,
                      'fixed_ips': [{'subnet_id': SUBNET}]}
         self.plugin.name_mapper = mock.Mock()
+        l3_apic.apic_mapper.mapper_context = self.fake_transaction
         self.plugin.name_mapper.tenant.return_value = mocked.APIC_TENANT
         self.plugin.name_mapper.network.return_value = mocked.APIC_NETWORK
         self.plugin.name_mapper.subnet.return_value = mocked.APIC_SUBNET
@@ -91,20 +95,7 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         self.contract = FakeContract()
         self.plugin.get_router = mock.Mock(
             return_value={'id': ROUTER, 'admin_state_up': True})
-        self.plugin.manager.get_router_contract = mock.Mock()
-        self.plugin.manager.create_router = mock.Mock()
-        ctmk = mock.PropertyMock(return_value=self.contract.contract_id)
-        type(self.plugin.manager.get_router_contract).contract_id = ctmk
-        self.epg = FakeEpg()
-        self.plugin.manager.ensure_epg_created_for_network = mock.Mock()
-        epmk = mock.PropertyMock(return_value=self.epg.epg_id)
-        type(self.plugin.manager.ensure_epg_created_for_network).epg_id = epmk
-
-        self.plugin.manager.db.get_provider_contract = mock.Mock(
-            return_value=None)
-        self.plugin.manager.set_contract_for_epg = mock.Mock(
-            return_value=True)
-        self.plugin.manager.delete_contract_for_epg = mock.Mock()
+        self.plugin.manager = mock.Mock()
         self.plugin.manager.apic.transaction = self.fake_transaction
 
         self.plugin.get_subnet = mock.Mock(return_value=self.subnet)
@@ -119,25 +110,28 @@ class TestCiscoApicL3Plugin(base.BaseTestCase,
         mock.patch('neutron.openstack.common.excutils.'
                    'save_and_reraise_exception').start()
 
-    def test_add_router_interface(self):
+    def _test_add_router_interface(self, interface_info):
         mgr = self.plugin.manager
-        self.plugin.add_router_interface(self.context, ROUTER,
-                                         self.interface_info)
-        mgr.create_router.assert_called_once_with(
-            mocked.APIC_ROUTER, transaction='transaction')
-        mgr.ensure_epg_created_for_network.assertEqual(TENANT_CONTRACT)
-        mgr.ensure_epg_created_for_network.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
-        mgr.ensure_epg_created_for_network.assertEqual(NETWORK_EPG)
-        mgr.db.get_provider_contract.assert_called_once()
-        mgr.db.get_provider_contract.assertEqual(None)
-        mgr.set_contract_for_epg.assert_called_once()
+        self.plugin.add_router_interface(self.context, ROUTER, interface_info)
+        mgr.create_router.assert_called_once_with(mocked.APIC_ROUTER,
+                                                  transaction='transaction')
+        mgr.add_router_interface.assert_called_once_with(
+            mocked.APIC_TENANT, mocked.APIC_ROUTER, mocked.APIC_NETWORK)
 
-    def test_remove_router_interface(self):
+    def _test_remove_router_interface(self, interface_info):
         mgr = self.plugin.manager
         self.plugin.remove_router_interface(self.context, ROUTER,
-                                            self.interface_info)
-        mgr.ensure_epg_created_for_network.assert_called_once_with(
-            mocked.APIC_TENANT, mocked.APIC_NETWORK, transaction='transaction')
-        mgr.ensure_epg_created_for_network.assertEqual(NETWORK_EPG)
+                                            interface_info)
         mgr.delete_contract_for_epg.assert_called_once()
+
+    def test_add_router_interface_subnet(self):
+        self._test_add_router_interface(self.interface_info['subnet'])
+
+    def test_add_router_interface_port(self):
+        self._test_add_router_interface(self.interface_info['port'])
+
+    def test_remove_router_interface_subnet(self):
+        self._test_remove_router_interface(self.interface_info['subnet'])
+
+    def test_remove_router_interface_port(self):
+        self._test_remove_router_interface(self.interface_info['port'])

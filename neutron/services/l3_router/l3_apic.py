@@ -14,16 +14,16 @@
 #    under the License.
 #
 # @author: Arvind Somya (asomya@cisco.com), Cisco Systems Inc.
+# @author: Ivar Lazzaro (ivarlazzaro@gmail.com), Cisco Systems Inc.
 
-from neutron.db import api as qdbapi
+from apicapi import apic_mapper
+
 from neutron.db import db_base_plugin_v2
 from neutron.db import extraroute_db
 from neutron.db import l3_gwmode_db
-from neutron.db import model_base
 from neutron.openstack.common import excutils
 from neutron.plugins.common import constants
 
-from neutron.plugins.ml2.drivers.cisco.apic.apic_mapper import mapper_context
 from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic
 
 
@@ -34,12 +34,9 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
     supported_extension_aliases = ["router", "ext-gw-mode", "extraroute"]
 
     def __init__(self):
-        qdbapi.register_models(base=model_base.BASEV2)
-        self.manager = \
-            mechanism_apic.APICMechanismDriver.get_apic_manager()
-        self.name_mapper = \
-            mechanism_apic.APICMechanismDriver.get_apic_name_mapper(
-                self.manager)
+        super(ApicL3ServicePlugin, self).__init__()
+        self.manager = mechanism_apic.APICMechanismDriver.get_apic_manager()
+        self.name_mapper = self.manager.apic_mapper
         self.synchronizer = None
         self.manager.ensure_infra_created_on_apic()
         self.manager.ensure_bgp_pod_policy_created_on_apic()
@@ -47,7 +44,7 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
     def _map_names(self, context,
                    tenant_id, router_id, net_id, subnet_id):
         context._plugin = self
-        with mapper_context(context) as ctx:
+        with apic_mapper.mapper_context(context) as ctx:
             atenant_id = tenant_id and self.name_mapper.tenant(ctx, tenant_id)
             arouter_id = router_id and self.name_mapper.router(ctx, router_id)
             anet_id = net_id and self.name_mapper.network(ctx, net_id)
@@ -60,22 +57,22 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
 
     @staticmethod
     def get_plugin_description():
-        """returns string description of the plugin."""
+        """Returns string description of the plugin."""
         return _("L3 Router Service Plugin for basic L3 using the APIC")
 
     def sync_init(f):
         def inner(inst, *args, **kwargs):
             if not inst.synchronizer:
-                inst.synchronizer = \
-                    mechanism_apic.APICMechanismDriver.\
-                    get_router_synchronizer(inst)
+                inst.synchronizer = (
+                    mechanism_apic.APICMechanismDriver.
+                    get_router_synchronizer(inst))
                 inst.synchronizer.sync_router()
             return f(inst, *args, **kwargs)
         return inner
 
     def add_router_interface_postcommit(self, context, router_id,
                                         interface_info):
-        # Create router / update its state first
+        # Update router's state first
         router = self.get_router(context, router_id)
         self.update_router_postcommit(context, router)
 
@@ -116,15 +113,15 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
         self.manager.remove_router_interface(atenant_id, arouter_id,
                                              anetwork_id)
 
-    def delete_router_postcommit(self, context, router_id):
+    def delete_router_precommit(self, context, router_id):
         context._plugin = self
-        with mapper_context(context) as ctx:
+        with apic_mapper.mapper_context(context) as ctx:
             arouter_id = router_id and self.name_mapper.router(ctx, router_id)
         self.manager.delete_router(arouter_id)
 
     def update_router_postcommit(self, context, router):
         context._plugin = self
-        with mapper_context(context) as ctx:
+        with apic_mapper.mapper_context(context) as ctx:
             arouter_id = router['id'] and self.name_mapper.router(ctx,
                                                                   router['id'])
         with self.manager.apic.transaction() as trs:
@@ -135,6 +132,7 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                 self.manager.disable_router(arouter_id, transaction=trs)
 
     # Router API
+
     @sync_init
     def create_router(self, *args, **kwargs):
         return super(ApicL3ServicePlugin, self).create_router(*args, **kwargs)
@@ -160,9 +158,9 @@ class ApicL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
                                                                   **kwargs)
 
     def delete_router(self, context, router_id):
+        self.delete_router_precommit(context, router_id)
         result = super(ApicL3ServicePlugin, self).delete_router(context,
                                                                 router_id)
-        self.delete_router_postcommit(context, router_id)
         return result
 
     # Router Interface API

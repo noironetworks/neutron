@@ -15,8 +15,10 @@
 #
 # @author: Arvind Somya (asomya@cisco.com), Cisco Systems Inc.
 
+from apicapi import apic_manager
+from apicapi import exceptions as exc
+from keystoneclient.v2_0 import client as keyclient
 import netaddr
-
 from oslo.config import cfg
 
 from neutron.common import constants as n_constants
@@ -25,12 +27,11 @@ from neutron.openstack.common import lockutils
 from neutron.openstack.common import log
 from neutron.plugins.common import constants
 from neutron.plugins.ml2 import driver_api as api
-from neutron.plugins.ml2.drivers.cisco.apic import apic_manager
-from neutron.plugins.ml2.drivers.cisco.apic import apic_mapper
+from neutron.plugins.ml2.drivers.cisco.apic import apic_model
 from neutron.plugins.ml2.drivers.cisco.apic import apic_sync
 from neutron.plugins.ml2.drivers.cisco.apic import config
-from neutron.plugins.ml2.drivers.cisco.apic import exceptions as exc
 from neutron.plugins.ml2 import models
+
 
 LOG = log.getLogger(__name__)
 
@@ -38,23 +39,22 @@ LOG = log.getLogger(__name__)
 class APICMechanismDriver(api.MechanismDriver):
 
     @staticmethod
-    def get_apic_manager():
+    def get_apic_manager(client=True):
         apic_config = cfg.CONF.ml2_cisco_apic
         network_config = {
             'vlan_ranges': cfg.CONF.ml2_type_vlan.network_vlan_ranges,
-            'switch_dict': config.switch_dictionary(),
-            'vpc_dict': config.vpc_dictionary(),
-            'external_network_dict': config.external_network_dictionary(),
+            'switch_dict': config.create_switch_dictionary(),
+            'vpc_dict': config.create_vpc_dictionary(),
+            'external_network_dict':
+            config.create_external_network_dictionary(),
         }
         apic_system_id = cfg.CONF.apic_system_id
-        return apic_manager.APICManager(apic_config, network_config,
+        keyclient_param = keyclient if client else None
+        keystone_authtoken = cfg.CONF.keystone_authtoken if client else None
+        return apic_manager.APICManager(apic_model.ApicDbModel(), log,
+                                        network_config, apic_config,
+                                        keyclient_param, keystone_authtoken,
                                         apic_system_id)
-
-    @staticmethod
-    def get_apic_name_mapper(apic_manager):
-        apic_config = cfg.CONF.ml2_cisco_apic
-        return apic_mapper.APICNameMapper(
-            apic_manager.db, apic_config.apic_name_mapping)
 
     @staticmethod
     def get_base_synchronizer(inst):
@@ -71,8 +71,7 @@ class APICMechanismDriver(api.MechanismDriver):
     def initialize(self):
         # initialize apic
         self.apic_manager = APICMechanismDriver.get_apic_manager()
-        self.name_mapper = APICMechanismDriver.get_apic_name_mapper(
-            self.apic_manager)
+        self.name_mapper = self.apic_manager.apic_mapper
         self.synchronizer = None
         self.apic_manager.ensure_infra_created_on_apic()
         self.apic_manager.ensure_bgp_pod_policy_created_on_apic()
@@ -80,13 +79,13 @@ class APICMechanismDriver(api.MechanismDriver):
     def sync_init(f):
         def inner(inst, *args, **kwargs):
             if not inst.synchronizer:
-                inst.synchronizer = \
-                    APICMechanismDriver.get_base_synchronizer(inst)
+                inst.synchronizer = (
+                    APICMechanismDriver.get_base_synchronizer(inst))
                 inst.synchronizer.sync_base()
             return f(inst, *args, **kwargs)
         return inner
 
-    @lockutils.synchronized('portlock')
+    @lockutils.synchronized('apic-portlock')
     def _perform_path_port_operations(self, context, port):
         # Get network
         network_id = context.network.current['id']
@@ -94,9 +93,10 @@ class APICMechanismDriver(api.MechanismDriver):
         # Get tenant details from port context
         tenant_id = context.current['tenant_id']
         tenant_id = self.name_mapper.tenant(context, tenant_id)
+
         # Get segmentation id
         if not context.bound_segment:
-            LOG.debug(("Port %s is not bound to a segment"), port)
+            LOG.debug("Port %s is not bound to a segment", port)
             return
         seg = None
         if (context.bound_segment.get(api.NETWORK_TYPE)
@@ -163,16 +163,16 @@ class APICMechanismDriver(api.MechanismDriver):
                                                        network_id)
 
     def _get_active_path_count(self, context):
-        return context._plugin_context.session.query(models.PortBinding).\
-            filter_by(host=context.current.get(portbindings.HOST_ID),
-                      segment=context._binding.segment).count()
+        return (context._plugin_context.session.query(models.PortBinding).
+                filter_by(host=context.current.get(portbindings.HOST_ID),
+                          segment=context._binding.segment).count())
 
-    @lockutils.synchronized('portlock')
+    @lockutils.synchronized('apic-portlock')
     def _delete_port_path(self, context, atenant_id, anetwork_id):
         if not self._get_active_path_count(context):
             self.apic_manager.ensure_path_deleted_for_port(
                 atenant_id, anetwork_id,
-                context.current.get(portbindings.HOST_ID))
+                context.host)
 
     def _delete_path_if_last(self, context):
         if not self._get_active_path_count(context):
@@ -188,10 +188,8 @@ class APICMechanismDriver(api.MechanismDriver):
         network = context._plugin.get_network(context._plugin_context,
                                               network_id)
         if not network.get('router:external'):
-            gateway_ip = subnet['gateway_ip']
             cidr = netaddr.IPNetwork(subnet['cidr'])
-            netmask = str(cidr.prefixlen)
-            gateway_ip = gateway_ip + '/' + netmask
+            gateway_ip = '%s/%s' % (subnet['gateway_ip'], str(cidr.prefixlen))
 
             # Convert to APIC IDs
             tenant_id = self.name_mapper.tenant(context, tenant_id)
@@ -208,8 +206,8 @@ class APICMechanismDriver(api.MechanismDriver):
         if (orig['device_owner'] != curr['device_owner']
                 or orig['device_id'] != curr['device_id']):
             raise exc.ApicOperationNotSupported(
-                resource='Port', msg='Port device owner and id cannot be'
-                                     ' changed.')
+                resource='Port', msg='Port device owner and id cannot be '
+                                     'changed.')
 
     @sync_init
     def update_port_postcommit(self, context):
@@ -240,7 +238,7 @@ class APICMechanismDriver(api.MechanismDriver):
                 self.apic_manager.ensure_bd_created_on_apic(tenant_id,
                                                             network_id,
                                                             transaction=trs)
-                self.apic_manager.ensure_epg_created_for_network(
+                self.apic_manager.ensure_epg_created(
                     tenant_id, network_id, transaction=trs)
 
     @sync_init
@@ -281,18 +279,19 @@ class APICMechanismDriver(api.MechanismDriver):
     @sync_init
     def update_subnet_postcommit(self, context):
         if context.current['gateway_ip'] != context.original['gateway_ip']:
-            info = self._get_subnet_info(context, context.original)
-            if info:
-                tenant_id, network_id, gateway_ip = info
-                # Delete subnet
-                self.apic_manager.ensure_subnet_deleted_on_apic(
-                    tenant_id, network_id, gateway_ip)
-            info = self._get_subnet_info(context, context.current)
-            if info:
-                tenant_id, network_id, gateway_ip = info
-                # Delete subnet
-                self.apic_manager.ensure_subnet_created_on_apic(
-                    tenant_id, network_id, gateway_ip)
+            with self.apic_manager.apic.transaction() as trs:
+                info = self._get_subnet_info(context, context.original)
+                if info:
+                    tenant_id, network_id, gateway_ip = info
+                    # Delete subnet
+                    self.apic_manager.ensure_subnet_deleted_on_apic(
+                        tenant_id, network_id, gateway_ip, transaction=trs)
+                info = self._get_subnet_info(context, context.current)
+                if info:
+                    tenant_id, network_id, gateway_ip = info
+                    # Create subnet
+                    self.apic_manager.ensure_subnet_created_on_apic(
+                        tenant_id, network_id, gateway_ip, transaction=trs)
 
     def delete_subnet_postcommit(self, context):
         info = self._get_subnet_info(context, context.current)
