@@ -26,15 +26,16 @@ from neutron import context as ctx
 from neutron.extensions import portbindings
 from neutron.openstack.common import log
 from neutron.plugins.bigswitch import config as pl_config
-from neutron.plugins.bigswitch.plugin import NeutronRestProxyV2Base
+from neutron.plugins.bigswitch import plugin
 from neutron.plugins.bigswitch import servermanager
 from neutron.plugins.ml2 import driver_api as api
 
 
 LOG = log.getLogger(__name__)
+put_context_in_serverpool = plugin.put_context_in_serverpool
 
 
-class BigSwitchMechanismDriver(NeutronRestProxyV2Base,
+class BigSwitchMechanismDriver(plugin.NeutronRestProxyV2Base,
                                api.MechanismDriver):
 
     """Mechanism Driver for Big Switch Networks Controller.
@@ -43,7 +44,7 @@ class BigSwitchMechanismDriver(NeutronRestProxyV2Base,
     operations to the Big Switch Controller.
     """
 
-    def initialize(self, server_timeout=None):
+    def initialize(self):
         LOG.debug(_('Initializing driver'))
 
         # register plugin config opts
@@ -53,7 +54,7 @@ class BigSwitchMechanismDriver(NeutronRestProxyV2Base,
         self.native_bulk_support = False
 
         # init network ctrl connections
-        self.servers = servermanager.ServerPool(server_timeout)
+        self.servers = servermanager.ServerPool()
         self.servers.get_topo_function = self._get_all_data
         self.servers.get_topo_function_args = {'get_ports': True,
                                                'get_floating_ips': False,
@@ -61,18 +62,22 @@ class BigSwitchMechanismDriver(NeutronRestProxyV2Base,
         self.segmentation_types = ', '.join(cfg.CONF.ml2.type_drivers)
         LOG.debug(_("Initialization done"))
 
+    @put_context_in_serverpool
     def create_network_postcommit(self, context):
         # create network on the network controller
         self._send_create_network(context.current)
 
+    @put_context_in_serverpool
     def update_network_postcommit(self, context):
         # update network on the network controller
         self._send_update_network(context.current)
 
+    @put_context_in_serverpool
     def delete_network_postcommit(self, context):
         # delete network on the network controller
         self._send_delete_network(context.current)
 
+    @put_context_in_serverpool
     def create_port_postcommit(self, context):
         # create port on the network controller
         port = self._prepare_port_for_controller(context)
@@ -80,6 +85,7 @@ class BigSwitchMechanismDriver(NeutronRestProxyV2Base,
             self.async_port_create(port["network"]["tenant_id"],
                                    port["network"]["id"], port)
 
+    @put_context_in_serverpool
     def update_port_postcommit(self, context):
         # update port on the network controller
         port = self._prepare_port_for_controller(context)
@@ -87,6 +93,7 @@ class BigSwitchMechanismDriver(NeutronRestProxyV2Base,
             self.servers.rest_update_port(port["network"]["tenant_id"],
                                           port["network"]["id"], port)
 
+    @put_context_in_serverpool
     def delete_port_postcommit(self, context):
         # delete port on the network controller
         port = context.current

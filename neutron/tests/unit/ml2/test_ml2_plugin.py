@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import contextlib
 import mock
 import testtools
 import webob
@@ -23,8 +24,10 @@ from neutron.extensions import multiprovidernet as mpnet
 from neutron.extensions import portbindings
 from neutron.extensions import providernet as pnet
 from neutron import manager
+from neutron.plugins.common import constants as service_constants
 from neutron.plugins.ml2.common import exceptions as ml2_exc
 from neutron.plugins.ml2 import config
+from neutron.plugins.ml2 import driver_api
 from neutron.plugins.ml2 import plugin as ml2_plugin
 from neutron.tests.unit import _test_extension_portbindings as test_bindings
 from neutron.tests.unit import test_db_plugin as test_plugin
@@ -64,18 +67,19 @@ class Ml2PluginV2TestCase(test_plugin.NeutronDbPluginV2TestCase):
         self.context = context.get_admin_context()
 
 
-class TestMl2BulkToggle(Ml2PluginV2TestCase):
+class TestMl2BulkToggleWithBulkless(Ml2PluginV2TestCase):
+
+    _mechanism_drivers = ['logger', 'test', 'bulkless']
 
     def test_bulk_disable_with_bulkless_driver(self):
-        self.tearDown()
-        self._mechanism_drivers = ['logger', 'test', 'bulkless']
-        self.setUp()
         self.assertTrue(self._skip_native_bulk)
 
+
+class TestMl2BulkToggleWithoutBulkless(Ml2PluginV2TestCase):
+
+    _mechanism_drivers = ['logger', 'test']
+
     def test_bulk_enabled_with_bulk_drivers(self):
-        self.tearDown()
-        self._mechanism_drivers = ['logger', 'test']
-        self.setUp()
         self.assertFalse(self._skip_native_bulk)
 
 
@@ -117,6 +121,42 @@ class TestMl2PortsV2(test_plugin.TestPortsV2, Ml2PluginV2TestCase):
                 mock.call(_("Deleting port %s"), 'invalid-uuid'),
                 mock.call(_("The port '%s' was deleted"), 'invalid-uuid')
             ])
+
+    def test_delete_port_no_notify_in_disassociate_floatingips(self):
+        ctx = context.get_admin_context()
+        plugin = manager.NeutronManager.get_plugin()
+        l3plugin = manager.NeutronManager.get_service_plugins().get(
+            service_constants.L3_ROUTER_NAT)
+        with contextlib.nested(
+            self.port(no_delete=True),
+            mock.patch.object(l3plugin, 'disassociate_floatingips'),
+            mock.patch.object(l3plugin, 'notify_routers_updated')
+        ) as (port, disassociate_floatingips, notify):
+
+            port_id = port['port']['id']
+            plugin.delete_port(ctx, port_id)
+
+            # check that no notification was requested while under
+            # transaction
+            disassociate_floatingips.assert_has_calls([
+                mock.call(ctx, port_id, do_notify=False)
+            ])
+
+            # check that notifier was still triggered
+            notify.assert_has_calls([
+                mock.call(ctx, disassociate_floatingips.return_value)
+            ])
+
+    def test_disassociate_floatingips_do_notify_returns_nothing(self):
+        ctx = context.get_admin_context()
+        l3plugin = manager.NeutronManager.get_service_plugins().get(
+            service_constants.L3_ROUTER_NAT)
+        with self.port() as port:
+
+            port_id = port['port']['id']
+            # check that nothing is returned when notifications are handled
+            # by the called method
+            self.assertIsNone(l3plugin.disassociate_floatingips(ctx, port_id))
 
 
 class TestMl2PortBinding(Ml2PluginV2TestCase,
@@ -286,6 +326,17 @@ class TestMultiSegmentNetworks(Ml2PluginV2TestCase):
         network_req = self.new_create_request('networks', data)
         res = network_req.get_response(self.api)
         self.assertEqual(res.status_int, 400)
+
+    def test_release_segment_no_type_driver(self):
+        segment = {driver_api.NETWORK_TYPE: 'faketype',
+                   driver_api.PHYSICAL_NETWORK: 'physnet1',
+                   driver_api.ID: 1}
+        with mock.patch('neutron.plugins.ml2.managers.LOG') as log:
+            self.driver.type_manager.release_segment(session=None,
+                                                     segment=segment)
+        log.error.assert_called_once_with(
+            "Failed to release segment '%s' because "
+            "network type is not supported.", segment)
 
     def test_create_provider_fail(self):
         segment = {pnet.NETWORK_TYPE: None,

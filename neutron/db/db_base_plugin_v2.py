@@ -16,9 +16,11 @@
 #    under the License.
 
 import random
+import weakref
 
 import netaddr
 from oslo.config import cfg
+from sqlalchemy import and_
 from sqlalchemy import event
 from sqlalchemy import orm
 from sqlalchemy.orm import exc
@@ -90,6 +92,16 @@ class CommonDbMixin(object):
             cls._model_query_hooks[model] = model_hooks
         model_hooks[name] = {'query': query_hook, 'filter': filter_hook,
                              'result_filters': result_filters}
+
+    @property
+    def safe_reference(self):
+        """Return a weakref to the instance.
+
+        Minimize the potential for the instance persisting
+        unnecessarily in memory by returning a weakref proxy that
+        won't prevent deallocation.
+        """
+        return weakref.proxy(self)
 
     def _model_query(self, context, model):
         query = context.session.query(model)
@@ -811,7 +823,12 @@ class NeutronDbPluginV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
             return
         ports = self._model_query(
             context, models_v2.Port).filter(
-                models_v2.Port.network_id == id)
+                and_(
+                    models_v2.Port.network_id == id,
+                    models_v2.Port.device_owner !=
+                    constants.DEVICE_OWNER_ROUTER_GW,
+                    models_v2.Port.device_owner !=
+                    constants.DEVICE_OWNER_FLOATINGIP))
         subnets = self._model_query(
             context, models_v2.Subnet).filter(
                 models_v2.Subnet.network_id == id)

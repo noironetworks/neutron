@@ -27,6 +27,7 @@ from neutron.openstack.common import log as logging
 from neutron.plugins.cisco.common import cisco_constants as c_const
 from neutron.plugins.cisco.common import cisco_credentials_v2 as c_cred
 from neutron.plugins.cisco.common import cisco_exceptions as c_exc
+from neutron.plugins.cisco.common import config as c_conf
 from neutron.plugins.cisco.db import network_db_v2
 from neutron.plugins.cisco.extensions import n1kv
 from neutron import wsgi
@@ -146,7 +147,7 @@ class Client(object):
         self.format = 'json'
         self.hosts = self._get_vsm_hosts()
         self.action_prefix = 'http://%s/api/n1k' % self.hosts[0]
-        self.timeout = c_const.DEFAULT_HTTP_TIMEOUT
+        self.timeout = c_conf.CISCO_N1K.http_timeout
 
     def list_port_profiles(self):
         """
@@ -155,18 +156,6 @@ class Client(object):
         :returns: XML string
         """
         return self._get(self.port_profiles_path)
-
-    def list_events(self, event_type=None, epoch=None):
-        """
-        Fetch all events of event_type from the VSM.
-
-        :param event_type: type of event to be listed.
-        :param epoch: timestamp after which the events occurred to be listed.
-        :returns: XML string
-        """
-        if event_type:
-            self.events_path = self.events_path + '?type=' + event_type
-        return self._get(self.events_path)
 
     def create_bridge_domain(self, network, overlay_subtype):
         """
@@ -285,6 +274,8 @@ class Client(object):
                 'id': network_profile['id'],
                 'logicalNetwork': logical_network_name,
                 'tenantId': tenant_id}
+        if network_profile['segment_type'] == c_const.NETWORK_TYPE_OVERLAY:
+            body['subType'] = network_profile['sub_type']
         return self._post(
             self.network_segment_pool_path % network_profile['id'],
             body=body)
@@ -321,7 +312,7 @@ class Client(object):
                 ip = netaddr.IPNetwork(subnet['cidr'])
                 netmask = str(ip.netmask)
                 network_address = str(ip.network)
-            except netaddr.AddrFormatError:
+            except (ValueError, netaddr.AddrFormatError):
                 msg = _("Invalid input for CIDR")
                 raise n_exc.InvalidInput(error_message=msg)
         else:

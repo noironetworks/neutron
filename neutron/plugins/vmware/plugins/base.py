@@ -1003,11 +1003,15 @@ class NsxPluginV2(addr_pair_db.AllowedAddressPairsMixin,
                 isinstance(provider_type, bool)):
                 net_bindings = []
                 for tz in net_data[mpnet.SEGMENTS]:
+                    segmentation_id = tz.get(pnet.SEGMENTATION_ID, 0)
+                    segmentation_id_set = attr.is_attr_set(segmentation_id)
+                    if not segmentation_id_set:
+                        segmentation_id = 0
                     net_bindings.append(nsx_db.add_network_binding(
                         context.session, new_net['id'],
                         tz.get(pnet.NETWORK_TYPE),
                         tz.get(pnet.PHYSICAL_NETWORK),
-                        tz.get(pnet.SEGMENTATION_ID, 0)))
+                        segmentation_id))
                 if provider_type:
                     nsx_db.set_multiprovider_network(context.session,
                                                      new_net['id'])
@@ -1149,7 +1153,7 @@ class NsxPluginV2(addr_pair_db.AllowedAddressPairsMixin,
                         port_data[addr_pair.ADDRESS_PAIRS])
             else:
                 # remove ATTR_NOT_SPECIFIED
-                port_data[addr_pair.ADDRESS_PAIRS] = None
+                port_data[addr_pair.ADDRESS_PAIRS] = []
 
             # security group extension checks
             if port_security and has_ip:
@@ -1691,7 +1695,13 @@ class NsxPluginV2(addr_pair_db.AllowedAddressPairsMixin,
         nsx_router_id = nsx_utils.get_nsx_router_id(
             context.session, self.cluster, router_id)
         if port_id:
-            port_data = self._get_port(context, port_id)
+            port_data = self.get_port(context, port_id)
+            # If security groups are present we need to remove them as
+            # this is a router port and disable port security.
+            if port_data['security_groups']:
+                self.update_port(context, port_id,
+                                 {'port': {'security_groups': [],
+                                           psec.PORTSECURITY: False}})
             nsx_switch_id, nsx_port_id = nsx_utils.get_nsx_switch_and_port_id(
                 context.session, self.cluster, port_id)
             # Unplug current attachment from lswitch port
@@ -1997,7 +2007,11 @@ class NsxPluginV2(addr_pair_db.AllowedAddressPairsMixin,
         except n_exc.NotFound:
             LOG.warning(_("Nat rules not found in nsx for port: %s"), id)
 
-        super(NsxPluginV2, self).disassociate_floatingips(context, port_id)
+        # NOTE(ihrachys): L3 agent notifications don't make sense for
+        # NSX VMWare plugin since there is no L3 agent in such setup, so
+        # disabling them here.
+        super(NsxPluginV2, self).disassociate_floatingips(
+            context, port_id, do_notify=False)
 
     def create_network_gateway(self, context, network_gateway):
         """Create a layer-2 network gateway.
@@ -2315,7 +2329,7 @@ class NsxPluginV2(addr_pair_db.AllowedAddressPairsMixin,
         # NOTE(salv-orlando): Pre-generating Neutron ID for security group.
         neutron_id = str(uuid.uuid4())
         nsx_secgroup = secgrouplib.create_security_profile(
-            self.cluster, neutron_id, tenant_id, s)
+            self.cluster, tenant_id, neutron_id, s)
         with context.session.begin(subtransactions=True):
             s['id'] = neutron_id
             sec_group = super(NsxPluginV2, self).create_security_group(
@@ -2421,12 +2435,10 @@ class NsxPluginV2(addr_pair_db.AllowedAddressPairsMixin,
         :param security_group_rule: list of rules to create
         """
         s = security_group_rule.get('security_group_rules')
-        tenant_id = self._get_tenant_id_for_create(context, s)
 
         # TODO(arosen) is there anyway we could avoid having the update of
         # the security group rules in nsx outside of this transaction?
         with context.session.begin(subtransactions=True):
-            self._ensure_default_security_group(context, tenant_id)
             security_group_id = self._validate_security_group_rules(
                 context, security_group_rule)
             # Check to make sure security group exists

@@ -75,7 +75,7 @@ class TunnelTest(base.BaseTestCase):
 
         self.INT_BRIDGE = 'integration_bridge'
         self.TUN_BRIDGE = 'tunnel_bridge'
-        self.MAP_TUN_BRIDGE = 'tunnel_bridge_mapping'
+        self.MAP_TUN_BRIDGE = 'tun_br_map'
         self.NET_MAPPING = {'net1': self.MAP_TUN_BRIDGE}
         self.INT_OFPORT = 11111
         self.TUN_OFPORT = 22222
@@ -101,10 +101,14 @@ class TunnelTest(base.BaseTestCase):
         self.mock_int_bridge = self.ovs_bridges[self.INT_BRIDGE]
         self.mock_int_bridge.get_local_port_mac.return_value = '000000000001'
         self.mock_int_bridge_expected = [
-            mock.call.get_local_port_mac(),
+            mock.call.create(),
+            mock.call.set_secure_mode(),
             mock.call.delete_port('patch-tun'),
             mock.call.remove_all_flows(),
             mock.call.add_flow(priority=1, actions='normal'),
+            mock.call.add_flow(priority=0, table=constants.CANARY_TABLE,
+                               actions='drop'),
+            mock.call.get_local_port_mac()
         ]
 
         self.mock_map_tun_bridge = self.ovs_bridges[self.MAP_TUN_BRIDGE]
@@ -113,12 +117,12 @@ class TunnelTest(base.BaseTestCase):
         self.mock_map_tun_bridge_expected = [
             mock.call.remove_all_flows(),
             mock.call.add_flow(priority=1, actions='normal'),
-            mock.call.delete_port('phy-tunnel_bridge_mapping'),
+            mock.call.delete_port('phy-%s' % self.MAP_TUN_BRIDGE),
             mock.call.add_port(self.intb),
         ]
         self.mock_int_bridge.add_port.return_value = None
         self.mock_int_bridge_expected += [
-            mock.call.delete_port('int-tunnel_bridge_mapping'),
+            mock.call.delete_port('int-%s' % self.MAP_TUN_BRIDGE),
             mock.call.add_port(self.inta)
         ]
         self.inta_expected = [mock.call.link.set_up()]
@@ -190,13 +194,13 @@ class TunnelTest(base.BaseTestCase):
         self.device_exists = mock.patch.object(ip_lib, 'device_exists').start()
         self.device_exists.return_value = True
         self.device_exists_expected = [
-            mock.call('tunnel_bridge_mapping', 'sudo'),
-            mock.call('int-tunnel_bridge_mapping', 'sudo'),
+            mock.call(self.MAP_TUN_BRIDGE, 'sudo'),
+            mock.call('int-%s' % self.MAP_TUN_BRIDGE, 'sudo'),
         ]
 
         self.ipdevice = mock.patch.object(ip_lib, 'IPDevice').start()
         self.ipdevice_expected = [
-            mock.call('int-tunnel_bridge_mapping', 'sudo'),
+            mock.call('int-%s' % self.MAP_TUN_BRIDGE, 'sudo'),
             mock.call().link.delete()
         ]
         self.ipwrapper = mock.patch.object(ip_lib, 'IPWrapper').start()
@@ -204,8 +208,8 @@ class TunnelTest(base.BaseTestCase):
         add_veth.return_value = [self.inta, self.intb]
         self.ipwrapper_expected = [
             mock.call('sudo'),
-            mock.call().add_veth('int-tunnel_bridge_mapping',
-                                 'phy-tunnel_bridge_mapping')
+            mock.call().add_veth('int-%s' % self.MAP_TUN_BRIDGE,
+                                 'phy-%s' % self.MAP_TUN_BRIDGE)
         ]
 
         self.get_bridges = mock.patch.object(ovs_lib, 'get_bridges').start()
@@ -435,7 +439,7 @@ class TunnelTest(base.BaseTestCase):
                                               'sudo', 2, ['gre'],
                                               self.VETH_MTU)
         a.local_vlan_map[NET_UUID] = LVM
-        a.port_bound(VIF_PORT, NET_UUID, 'gre', None, LS_ID)
+        a.port_bound(VIF_PORT, NET_UUID, 'gre', None, LS_ID, False)
         self._verify_mock_calls()
 
     def test_port_unbound(self):
@@ -511,6 +515,11 @@ class TunnelTest(base.BaseTestCase):
                   'added': set([]),
                   'removed': set(['tap0'])}
 
+        self.mock_int_bridge_expected += [
+            mock.call.dump_flows_for_table(constants.CANARY_TABLE),
+            mock.call.dump_flows_for_table(constants.CANARY_TABLE)
+        ]
+
         with contextlib.nested(
             mock.patch.object(log.ContextAdapter, 'exception'),
             mock.patch.object(ovs_neutron_agent.OVSNeutronAgent,
@@ -549,10 +558,10 @@ class TunnelTest(base.BaseTestCase):
         process_network_ports.assert_has_calls([
             mock.call({'current': set(['tap0']),
                        'removed': set([]),
-                       'added': set(['tap2'])}),
+                       'added': set(['tap2'])}, False),
             mock.call({'current': set(['tap2']),
                        'removed': set(['tap0']),
-                       'added': set([])})
+                       'added': set([])}, False)
         ])
         self._verify_mock_calls()
 

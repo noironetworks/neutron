@@ -14,6 +14,7 @@
 #    under the License.
 
 import distutils.version as dist_version
+import os
 import re
 
 from oslo.config import cfg
@@ -124,6 +125,10 @@ class OVSBridge(BaseOVS):
             return res.strip().split('\n')
         return res
 
+    def set_secure_mode(self):
+        self.run_vsctl(['--', 'set-fail-mode', self.br_name, 'secure'],
+                       check_error=True)
+
     def set_protocols(self, protocols):
         self.run_vsctl(['--', 'set', 'bridge', self.br_name,
                         "protocols=%s" % protocols],
@@ -199,6 +204,15 @@ class OVSBridge(BaseOVS):
             self.deferred_flows['del'] += flow_expr_str + '\n'
         else:
             self.run_ofctl("del-flows", [flow_expr_str])
+
+    def dump_flows_for_table(self, table):
+        retval = None
+        flow_str = "table=%s" % table
+        flows = self.run_ofctl("dump-flows", [flow_str])
+        if flows:
+            retval = '\n'.join(item for item in flows.splitlines()
+                               if 'NXST' not in item)
+        return retval
 
     def defer_apply_on(self):
         LOG.debug(_('defer_apply_on'))
@@ -485,13 +499,9 @@ def get_installed_ovs_klm_version():
 
 
 def get_installed_kernel_version():
-    args = ["uname", "-r"]
     try:
-        cmd = utils.execute(args)
-        for line in cmd.split('\n'):
-            ver = re.findall("\d+\.\d+\.\d+", line)
-            return ver[0]
-    except Exception:
+        return os.uname()[2].split('-', 1)[0]
+    except IndexError:
         LOG.exception(_("Unable to retrieve installed Linux kernel version."))
 
 

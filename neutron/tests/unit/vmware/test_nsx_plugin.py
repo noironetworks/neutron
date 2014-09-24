@@ -242,7 +242,7 @@ class TestPortsV2(NsxPluginV2TestCase,
 
 class TestNetworksV2(test_plugin.TestNetworksV2, NsxPluginV2TestCase):
 
-    def _test_create_bridge_network(self, vlan_id=None):
+    def _test_create_bridge_network(self, vlan_id=0):
         net_type = vlan_id and 'vlan' or 'flat'
         name = 'bridge_net'
         expected = [('subnets', []), ('name', name), ('admin_state_up', True),
@@ -478,7 +478,7 @@ class TestL3NatTestCase(L3NatTest,
                         test_l3_plugin.L3NatDBIntTestCase,
                         NsxPluginV2TestCase):
 
-    def _test_create_l3_ext_network(self, vlan_id=None):
+    def _test_create_l3_ext_network(self, vlan_id=0):
         name = 'l3_ext_net'
         net_type = NetworkTypes.L3_EXT
         expected = [('subnets', []), ('name', name), ('admin_state_up', True),
@@ -943,17 +943,22 @@ class TestL3NatTestCase(L3NatTest,
         with self.port() as p:
             private_sub = {'subnet': {'id':
                                       p['port']['fixed_ips'][0]['subnet_id']}}
-            with self.floatingip_no_assoc(private_sub) as fip:
-                port_id = p['port']['id']
-                body = self._update('floatingips', fip['floatingip']['id'],
-                                    {'floatingip': {'port_id': port_id}})
-                self.assertEqual(body['floatingip']['port_id'], port_id)
-                # Disassociate
-                body = self._update('floatingips', fip['floatingip']['id'],
-                                    {'floatingip': {'port_id': None}})
-                body = self._show('floatingips', fip['floatingip']['id'])
-                self.assertIsNone(body['floatingip']['port_id'])
-                self.assertIsNone(body['floatingip']['fixed_ip_address'])
+            plugin = manager.NeutronManager.get_plugin()
+            with mock.patch.object(plugin, 'notify_routers_updated') as notify:
+                with self.floatingip_no_assoc(private_sub) as fip:
+                    port_id = p['port']['id']
+                    body = self._update('floatingips', fip['floatingip']['id'],
+                                        {'floatingip': {'port_id': port_id}})
+                    self.assertEqual(body['floatingip']['port_id'], port_id)
+                    # Disassociate
+                    body = self._update('floatingips', fip['floatingip']['id'],
+                                        {'floatingip': {'port_id': None}})
+                    body = self._show('floatingips', fip['floatingip']['id'])
+                    self.assertIsNone(body['floatingip']['port_id'])
+                    self.assertIsNone(body['floatingip']['fixed_ip_address'])
+
+                # check that notification was not requested
+                self.assertFalse(notify.called)
 
     def test_create_router_maintenance_returns_503(self):
         with self._create_l3_ext_network() as net:
@@ -971,6 +976,26 @@ class TestL3NatTestCase(L3NatTest,
                     res = router_req.get_response(self.ext_api)
                     self.assertEqual(webob.exc.HTTPServiceUnavailable.code,
                                      res.status_int)
+
+    def test_router_add_interface_port_removes_security_group(self):
+        with self.router() as r:
+            with self.port(no_delete=True) as p:
+                body = self._router_interface_action('add',
+                                                     r['router']['id'],
+                                                     None,
+                                                     p['port']['id'])
+                self.assertIn('port_id', body)
+                self.assertEqual(body['port_id'], p['port']['id'])
+
+                # fetch port and confirm no security-group on it.
+                body = self._show('ports', p['port']['id'])
+                self.assertEqual(body['port']['security_groups'], [])
+                self.assertFalse(body['port']['port_security_enabled'])
+                # clean-up
+                self._router_interface_action('remove',
+                                              r['router']['id'],
+                                              None,
+                                              p['port']['id'])
 
 
 class ExtGwModeTestCase(NsxPluginV2TestCase,
