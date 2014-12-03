@@ -34,7 +34,7 @@ class RouterContract(model_base.BASEV2, models_v2.HasTenant):
     referring to.
     """
 
-    __tablename__ = 'cisco_ml2_apic_contracts'
+    __tablename__ = 'icehouse_cisco_ml2_apic_contracts'
 
     router_id = sa.Column(sa.String(64), primary_key=True)
 
@@ -43,7 +43,7 @@ class HostLink(model_base.BASEV2):
 
     """Connectivity of host links."""
 
-    __tablename__ = 'cisco_ml2_apic_host_links'
+    __tablename__ = 'icehouse_cisco_ml2_apic_host_links'
 
     host = sa.Column(sa.String(255), nullable=False, primary_key=True)
     ifname = sa.Column(sa.String(64), nullable=False, primary_key=True)
@@ -56,7 +56,7 @@ class HostLink(model_base.BASEV2):
 class ApicName(model_base.BASEV2):
     """Mapping of names created on the APIC."""
 
-    __tablename__ = 'cisco_ml2_apic_names'
+    __tablename__ = 'icehouse_cisco_ml2_apic_names'
 
     neutron_id = sa.Column(sa.String(36), nullable=False, primary_key=True)
     neutron_type = sa.Column(sa.String(32), nullable=False, primary_key=True)

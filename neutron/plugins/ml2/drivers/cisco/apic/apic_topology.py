@@ -28,6 +28,7 @@ from neutron.agent.linux import ip_lib
 from neutron.agent.linux import utils
 from neutron.common import rpc as neutron_rpc
 from neutron.common import utils as neutron_utils
+from neutron import context
 from neutron.db import agents_db
 from neutron import manager
 from neutron.openstack.common.gettextutils import _LE, _LI
@@ -36,10 +37,12 @@ from neutron.openstack.common import log as logging
 from neutron.openstack.common import periodic_task
 from neutron.openstack.common import rpc
 from neutron.openstack.common import service as svc
-from neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic as ma
 from neutron.plugins.ml2.drivers import type_vlan  # noqa
-
 from neutron import service
+
+from apic_ml2.neutron.plugins.ml2.drivers.cisco.apic import mechanism_apic as \
+    ma
+
 
 ACI_PORT_DESCR_FORMATS = [
     'topology/pod-1/node-(\d+)/sys/conng/path-\[eth(\d+)/(\d+)\]',
@@ -328,12 +331,19 @@ class ApicTopologyAgent(manager.Manager):
             LOG.exception(_LE("APIC host agent: failed in reporting state"))
 
 
+class ApicService(service.Service):
+
+    def report_state(self):
+        ctxt = context.get_admin_context()
+        self.manager.report_send(ctxt)
+
+
 def launch(binary, manager, topic=None):
     cfg.CONF(project='neutron')
     config.setup_logging(cfg.CONF)
     report_period = cfg.CONF.ml2_cisco_apic.apic_agent_report_interval
     poll_period = cfg.CONF.ml2_cisco_apic.apic_agent_poll_interval
-    server = service.Service.create(
+    server = ApicService.create(
         binary=binary, manager=manager, topic=topic,
         report_interval=report_period, periodic_interval=poll_period)
     svc.launch(server).wait()
@@ -342,7 +352,7 @@ def launch(binary, manager, topic=None):
 def service_main():
     launch(
         BINARY_APIC_SERVICE_AGENT,
-        'neutron.plugins.ml2.drivers.' +
+        'apic_ml2.neutron.plugins.ml2.drivers.' +
         'cisco.apic.apic_topology.ApicTopologyService',
         TOPIC_APIC_SERVICE)
 
@@ -350,5 +360,5 @@ def service_main():
 def agent_main():
     launch(
         BINARY_APIC_HOST_AGENT,
-        'neutron.plugins.ml2.drivers.' +
+        'apic_ml2.neutron.plugins.ml2.drivers.' +
         'cisco.apic.apic_topology.ApicTopologyAgent')
