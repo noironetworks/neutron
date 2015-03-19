@@ -182,11 +182,15 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         self.assertFalse(mgr.ensure_external_epg_created.called)
 
         mgr.ensure_external_epg_consumed_contract.assert_called_once_with(
-            mocked.APIC_NETWORK_PRE, mgr.get_router_contract.return_value,
-            transaction='transaction', external_epg=mocked.APIC_EXT_EPG)
+            mocked.APIC_NETWORK_PRE + '-name',
+            mgr.get_router_contract.return_value,
+            transaction='transaction', external_epg=mocked.APIC_EXT_EPG,
+            scope=False)
         mgr.ensure_external_epg_provided_contract.assert_called_once_with(
-            mocked.APIC_NETWORK_PRE, mgr.get_router_contract.return_value,
-            transaction='transaction', external_epg=mocked.APIC_EXT_EPG)
+            mocked.APIC_NETWORK_PRE + '-name',
+            mgr.get_router_contract.return_value,
+            transaction='transaction', external_epg=mocked.APIC_EXT_EPG,
+            scope=False)
 
     def test_delete_gw_port_postcommit(self):
         net_ctx = self._get_network_context(mocked.APIC_TENANT,
@@ -212,8 +216,8 @@ class TestCiscoApicMechDriver(base.BaseTestCase,
         self.driver._delete_path_if_last = mock.Mock()
         self.driver.delete_port_postcommit(port_ctx)
         mgr.delete_external_epg_contract.assert_called_once_with(
-            mocked.APIC_ROUTER, mocked.APIC_NETWORK_PRE,
-            external_epg=mocked.APIC_EXT_EPG)
+            mocked.APIC_ROUTER, mocked.APIC_NETWORK_PRE + '-name',
+            external_epg=mocked.APIC_EXT_EPG, scope=False)
 
     def test_update_gw_port_postcommit_fail_contract_create(self):
         net_ctx = self._get_network_context(mocked.APIC_TENANT,
