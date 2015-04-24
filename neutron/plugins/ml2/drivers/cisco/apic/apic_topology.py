@@ -131,16 +131,13 @@ class ApicTopologyService(manager.Manager):
                 self.apic_manager.remove_hostlink(*clink)
                 self.peers.pop((host, interface))
         else:
-            if clink is None:
-                # add new link to database
-                self.apic_manager.add_hostlink(*nlink)
-                self.peers[(host, interface)] = nlink
-            elif clink != nlink:
-                # delete old link and add new one (don't update in place)
+            if clink is not None and clink != nlink:
+                # delete old link
                 self.apic_manager.remove_hostlink(*clink)
                 self.peers.pop((host, interface))
-                self.apic_manager.add_hostlink(*nlink)
-                self.peers[(host, interface)] = nlink
+            # always try to add the new one (for sync)
+            self.apic_manager.add_hostlink(*nlink)
+            self.peers[(host, interface)] = nlink
 
 
 class ApicTopologyServiceNotifierApi(rpc.RpcProxy):
@@ -216,7 +213,9 @@ class ApicTopologyAgent(manager.Manager):
     def after_start(self):
         LOG.info(_LI("APIC host agent: started on %s"), self.host)
 
-    @periodic_task.periodic_task
+    @periodic_task.periodic_task(
+        spacing=cfg.CONF.ml2_cisco_apic.apic_agent_poll_interval,
+        run_immediately=True)
     def _check_for_new_peers(self, context):
         LOG.debug("APIC host agent: _check_for_new_peers")
 
