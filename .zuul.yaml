@@ -1,4 +1,5 @@
 - project:
+    # This comment should be removed
     templates:
       - neutron-tempest-plugin-jobs
       - openstack-cover-jobs
