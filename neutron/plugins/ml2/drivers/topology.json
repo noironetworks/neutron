@@ -1,0 +1,31 @@
+{
+    "Physnets": [
+        {
+            "Name": "physnet1",
+            "Switches": [
+                {
+                    "Serial": "FLM273901SA",
+                    "Ip": "",
+                    "Interfaces": "Ethernet1/5",
+                    "TorInterfaces": "padkrish-9-26(Port-channel502)"
+                },
+                {
+                    "Serial": "FLM273901TQ",
+                    "Ip": "",
+                    "Interfaces": "Ethernet1/5",
+                    "TorInterfaces": "padkrish-9-26(Port-channel502)"
+                },
+                {
+                    "Serial": "FLM273901S0",
+                    "Ip": "172.28.9.247",
+                    "Interfaces": "Port-channel34"
+                },
+                {
+                    "Serial": "FLM2738011Z",
+                    "Ip": "172.28.9.244",
+                    "Interfaces": "Port-channel34"
+                }
+            ]
+        }
+    ]
+}
